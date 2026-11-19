@@ -89,7 +89,7 @@ def stage_t(job: Job) -> dict:
     tl = {"version": 3, "title": script.get("title", job.ep.name), "channel": job.slug, "fps": FPS, "total": total,
           "crt": bool(crt), "bpm": (script.get("groove") or {}).get("bpm", script.get("bpm", 120)),
           "groove": script.get("groove"), "mix": script.get("mix"), "audio": script.get("audio"),
-          "sfx_presets": script.get("sfx_presets"), "beats": beats, "words": []}
+          "sfx_presets": script.get("sfx_presets"), "text_rules": script.get("text_rules"), "beats": beats, "words": []}
     job.build.mkdir(parents=True, exist_ok=True)
     tl_json = job.build / "timeline.json"
     if not tl_json.exists() or read_json(tl_json) != tl:      # rewrite only on change, so frame caching works
@@ -206,8 +206,32 @@ def stage_c(job: Job, tl: dict, total: float, work: Path | None = None):
     master_loudness(work / "mix_v3.wav", target=float((tl.get("audio") or {}).get("lufs", -14.0)))
 
 
-def audio_report(wav: Path, tl: dict, dest: Path) -> dict:
-    """Per-phase peak / RMS and clipped-sample count of the mastered mix (QA check #2)."""
+def gap_floor(x: np.ndarray, act_path: Path, sr: int = 48000, guard: float = 0.03, win: float = 0.02) -> dict:
+    """Noise floor in the silent gaps between sounds: max RMS over 20 ms windows that lie entirely outside every
+    sound's audible span (+30 ms guard). Must be <= -60 dBFS."""
+    if not act_path.exists():
+        return {"gap_floor_dbfs": None}
+    act = read_json(act_path)
+    busy = np.zeros(len(x) + 1, dtype=np.int32)
+    for a, b in act["intervals"]:
+        a = max(0, a - int(0.002 * sr)); b = min(len(x), b + int(guard * sr))
+        busy[a] += 1; busy[b] -= 1
+    busy = np.cumsum(busy)[: len(x)] > 0
+    w = int(win * sr)
+    nwin = len(x) // w
+    xs = x[: nwin * w].reshape(nwin, w, -1).astype(np.float64)
+    bw = busy[: nwin * w].reshape(nwin, w).any(axis=1)
+    quiet = ~bw
+    if not quiet.any():
+        return {"gap_floor_dbfs": None, "gap_seconds": 0.0}
+    rms = np.sqrt((xs[quiet] ** 2).mean(axis=(1, 2)))
+    worst = float(rms.max())
+    return {"gap_floor_dbfs": round(20 * math.log10(max(worst, 1e-12)), 1), "gap_seconds": round(quiet.sum() * win, 2),
+            "dropped_triggers": act.get("dropped_triggers", 0)}
+
+
+def audio_report(wav: Path, tl: dict, dest: Path, mp4: Path | None = None) -> dict:
+    """Per-phase peak / RMS, clipped samples, and the noise floor in silent gaps (wav and, if given, the final MP4)."""
     from common import load_audio
     x = load_audio(wav, channels=2)
     sr = 48000
@@ -226,12 +250,22 @@ def audio_report(wav: Path, tl: dict, dest: Path) -> dict:
     rms_vals = [r["rms_dbfs"] for r in rows if r["rms_dbfs"] > -80]
     rep = {"phases": rows, "clipped_samples": clipped_total,
            "rms_spread_db": round(max(rms_vals) - min(rms_vals), 2) if rms_vals else None}
+    rep["wav_gaps"] = gap_floor(x, wav.with_suffix(".activity.json"))
+    if mp4 is not None and mp4.exists():
+        rep["mp4_gaps"] = gap_floor(load_audio(mp4, channels=2), wav.with_suffix(".activity.json"))
     write_json(dest, rep)
     log("audio per phase:            peak dBFS   RMS dBFS   clipped")
     for r in rows:
         log(f"   {r['beat']:20s}  {r['peak_dbfs']:8.1f}  {r['rms_dbfs']:9.1f}   {r['clipped_samples']}")
     log(f"audio: {'NO clipping' if clipped_total == 0 else str(clipped_total) + ' CLIPPED samples'}, "
         f"RMS spread across phases {rep['rms_spread_db']} dB", "ok" if clipped_total == 0 else "warn")
+    for k in ("wav_gaps", "mp4_gaps"):
+        g = rep.get(k)
+        if g and g.get("gap_floor_dbfs") is not None:
+            ok = g["gap_floor_dbfs"] <= -60
+            log(f"{k[:-5].upper()} silent gaps: noise floor {g['gap_floor_dbfs']} dBFS over {g['gap_seconds']} s of gaps "
+                f"({'OK <= -60 dBFS' if ok else 'TOO NOISY'}), {g.get('dropped_triggers', 0)} triggers dropped by 75 ms spacing",
+                "ok" if ok else "warn")
     return rep
 
 
@@ -348,11 +382,15 @@ def safe_zone_check(work: Path, dest: Path | None = None) -> list[dict]:
         log(f"safe zone OK — every text box / node stayed inside x {sp.get('left')}..{sp.get('right')}, "
             f"y {sp.get('top')}..{sp.get('bottom')}", "ok")
     else:
-        log(f"{len(v)} element(s) left the UI-safe box (x {sp.get('left')}..{sp.get('right')}, y {sp.get('top')}..{sp.get('bottom')}):", "warn")
-        for e in v[:12]:
+        log(f"{len(v)} layout/text rule violation(s) (safe box x {sp.get('left')}..{sp.get('right')}, y {sp.get('top')}..{sp.get('bottom')}; "
+            f"text <= 4 words, no bright static text > 5 s):", "warn")
+        for e in v[:14]:
             a = e.get("at") or {}
-            log(f"   {e['kind']:5s} '{e['label']}'  over by {e['maxOverflowPx']}px at t={a.get('t')}s "
-                f"(box x={a.get('x')} y={a.get('y')} w={a.get('w')} h={a.get('h')}), {e['frames']} frames", "warn")
+            if e["kind"] in ("words", "static"):
+                log(f"   {e['kind']:6s} '{e['label']}'  rule: {e.get('rule')} (first at t={a.get('t')}s)", "warn")
+            else:
+                log(f"   {e['kind']:6s} '{e['label']}'  over by {e['maxOverflowPx']}px at t={a.get('t')}s "
+                    f"(box x={a.get('x')} y={a.get('y')} w={a.get('w')} h={a.get('h')}), {e['frames']} frames", "warn")
     return v
 
 
@@ -452,6 +490,7 @@ def main():
         audio_report(job.build / "mix_v3.wav", tl, job.build / "audio_report.json")
     if "E" in args.steps.upper():
         out = stage_e(job, tl, total)
+        audio_report(job.build / "mix_v3.wav", tl, job.build / "audio_report.json", mp4=out)
         log(f"DONE in {time.time() - t0:.1f}s -> {out}", "ok")
 
 
