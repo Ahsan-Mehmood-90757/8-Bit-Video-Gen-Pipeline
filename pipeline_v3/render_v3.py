@@ -1,19 +1,22 @@
 """render_v3.py — Visual-First (zero-TTS) orchestrator: script.json + simulation.js -> 1080x1920 60fps MP4.
 
-    python pipeline_v3/render_v3.py --episode episodes_v3/<ep> --preview-only     # QA pass (silent)
+    python pipeline_v3/render_v3.py --episode episodes_v3/<ep> --preview-only     # QA pass
     python pipeline_v3/render_v3.py --episode episodes_v3/<ep>                    # full render
 
 No TTS, no Whisper, no .ass captions. Stages:
-  T  timeline.js / timeline.json straight from script.json beat times (+ optional groove block)
+  T  timeline.js / timeline.json straight from script.json beat times (+ optional groove / audio / sfx_presets)
   B  headless Chromium (--use-gl=angle) steps engine_v3/sim_base_v3.html frame by frame -> raw RGBA ->
-     FFmpeg lossless 270x480 intermediate; exports build/audio_log_v3.json (events, synth, pulses)
-  C  pipeline_v3/synth_v3.py -> build/mix_v3.wav (frame-locked chiptune + foley, limiter, no ducking)
-  E  4x nearest-neighbor upscale + CRT scanlines, two-pass loudnorm (-14 LUFS, -1 dBTP) -> H.264 yuv420p MP4
+     FFmpeg lossless 270x480 intermediate; exports build/audio_log_v3.json + safe_zone_report.json
+  C  pipeline_v3/synth_v3.py -> build/mix_v3.wav (clean-envelope chiptune + foley through the master chain),
+     then mastering: one clean gain to the target loudness (script audio.lufs, default -14) + -1 dBFS limiter;
+     audio_report.json: per-phase peak/RMS, clipped samples, silent-gap noise floor (must be <= -60 dBFS)
+  E  4x nearest-neighbor upscale + CRT scanlines -> H.264 yuv420p MP4 (+ silent-gap check on the MP4 audio)
 
---preview-only writes <episode>/qa/qa_phase1..4.png (aliases qa_hook/mid1/mid2/payoff.png), qa_sheet.png,
-audio_report.json (per-phase peak/RMS, clipped samples) and preview.mp4 (540x960 with audio) with a faint magenta dashed UI-safe border (x 90..920, y 260..1480 on 1080x1920). Every text box, box, tag,
-micro-text and R.node() is checked on every frame; if any leaves the safe box, QA FAILS (exit code 2), offenders are
-outlined in magenta and listed in qa/safe_zone_report.json. The final render never draws the border.
+--preview-only writes <episode>/qa/: qa_phase1..4.png (aliases qa_hook/mid1/mid2/payoff.png), qa_sheet.png,
+preview.mp4 (540x960 with audio), audio_report.json and safe_zone_report.json. QA FAILS (exit code 2) if any text
+box, box, tag, micro-text or R.node() leaves the UI-safe box (x 90..920, y 260..1480 on 1080x1920), if any text has
+more than 4 words, or if bright text sits unchanged for more than 5 s. Offenders are outlined in magenta on the QA
+images; the faint magenta safe-zone border appears only in QA renders.
 
 Episodes may live in episodes_v3/ or inside a channel (channels/<slug>/episodes/<ep>) — then that channel's
 theme.js / sfx_presets.js / channel.json (crt, encoder) apply, and nothing from any other channel.
@@ -317,23 +320,6 @@ def video_chain(crt: bool, size=(OUT_W, OUT_H)) -> str:
         fc += f";[{last}]scale={size[0]}:{size[1]}:flags=area[v2]"
         last = "v2"
     return fc + f";[{last}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]"
-
-
-def loudnorm_filter(wav: Path) -> str:
-    """Two-pass loudnorm: measure, then apply a linear (transparent) gain to -14 LUFS / -1 dBTP."""
-    p = subprocess.run([which_ffmpeg(), "-hide_banner", "-nostats", "-i", str(wav), "-af",
-                        "loudnorm=I=-14:TP=-1.0:LRA=11:print_format=json", "-f", "null", "-"],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    txt = p.stderr.decode("utf-8", "replace")
-    try:
-        m = json.loads(txt[txt.rindex("{"): txt.rindex("}") + 1])
-        log(f"loudness: measured {m['input_i']} LUFS, true peak {m['input_tp']} dBTP -> -14 LUFS")
-        return ("loudnorm=I=-14:TP=-1.0:LRA=11:linear=true:"
-                f"measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}:"
-                f"measured_thresh={m['input_thresh']}:offset={m['target_offset']}")
-    except Exception:
-        log("loudness measurement failed — using single-pass loudnorm", "warn")
-        return "loudnorm=I=-14:TP=-1.0:LRA=11"
 
 
 def stage_e(job: Job, tl: dict, total: float) -> Path:

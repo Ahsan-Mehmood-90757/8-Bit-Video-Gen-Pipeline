@@ -1,16 +1,17 @@
 /* micro_text.js — V3 Visual-First layer: Impact Micro-Text, Hook Banner, Payoff Stamp, beat clock.
  * Load after engine/retro_engine.js + engine/camera_ui.js + engine_v3/audio_events_v3.js.
  *
- * With no captions in v3, the whole 900x1420 safe rectangle is available, so R.SAFE grows to
- * {x:22, y:55, w:226, h:355} (low-res px). Every micro-text box is clamped inside it.
+ * Every element is clamped inside R.SAFE (the UI-safe box from safe_zone_v3.js) and pops in
+ * (scale 0.7 -> 1.05 -> 1.0 over 120 ms, R.popScale / R.popBlit). Keep each text to <= 4 words.
  *
- *   R.micro(text, x, y, {t0, dur, style, color, size, at:[dx,dy], pointer, anim, priority})
- *       2–5 word pixel badge anchored to a moving part / state change (world coords inside R.world).
+ *   R.micro(text, x, y, {t0, dur, style, color, size, at:[dx,dy], pointer, anim, priority, dimAfter, fixed})
+ *       <= 4 word pixel badge anchored to a moving part / state change (world coords inside R.world).
  *       style: 'badge' (default) | 'warn' | 'tag' | 'stamp' | 'formula' | 'ok'
  *       anim:  'pop' | 'shake' | 'flash' (combine: 'pop shake') — defaults depend on style
- *       Visible from t0 for dur seconds, pops in, fades out; auto-placed above the anchor, pushed
- *       away from other micro-text / labels / R.reserve() rects, and clamped inside the safe zone.
- *   R.hookBanner(text, {t0=0, dur=3, sub, color, sfx='banner'})   slam-in banner for the first 3 s
+ *       Visible from t0 for dur seconds, pops in, dims after dimAfter s, fades out; auto-placed above the
+ *       anchor (or exactly at `at` with fixed:true), pushed away from other text / R.reserve() rects.
+ *   R.hookBanner(text, {t0=0, dur=2.2, sub, color, sfx='banner'})  3-4 word tension hook for the first 2.2 s
+ *   R.digits(str, x, y, {scale, color, align})                     compact 3x5 digits for dense grids (data)
  *   R.payoffStamp(text, {t0, dur, color, sub, y, sfx='stamp'})      end-card stamp ("FIXED RAM.\nO(1) FLOW.")
  *   R.formula(text, x, y, {t0, dur})                               typewriter formula flash ("HEAD=(HEAD+1)%8")
  *   R.pulse(kind, {note, accent, pan})                             rhythmic accent at this frame (kick/bass/hat/snare)

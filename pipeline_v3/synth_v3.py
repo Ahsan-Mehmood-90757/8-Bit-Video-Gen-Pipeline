@@ -31,7 +31,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "pipeline"))
 from common import SAMPLE_RATE, _read_js_json, load_sfx_presets, log, read_json, write_wav  # noqa: E402  (v2 helpers, read-only)
-from synth_sfx import synth_sound  # noqa: E402,F401  (v2 oscillator; v3 uses synth_sound_v3 with clean envelopes)
 from common import write_json as write_json_safe  # noqa: E402
 
 FPS = 60
