@@ -11,7 +11,9 @@ No TTS, no Whisper, no .ass captions. Stages:
   E  4x nearest-neighbor upscale + CRT scanlines, two-pass loudnorm (-14 LUFS, -1 dBTP) -> H.264 yuv420p MP4
 
 --preview-only writes <episode>/qa/qa_hook.png, qa_mid1.png, qa_mid2.png, qa_payoff.png (+ qa_sheet.png and a silent
-preview.mp4) with safe-zone guides, for visual inspection before the full render.
+preview.mp4) with a faint magenta dashed UI-safe border (x 90..920, y 260..1480 on 1080x1920). Every text box, box, tag,
+micro-text and R.node() is checked on every frame; if any leaves the safe box, QA FAILS (exit code 2), offenders are
+outlined in magenta and listed in qa/safe_zone_report.json. The final render never draws the border.
 
 Episodes may live in episodes_v3/ or inside a channel (channels/<slug>/episodes/<ep>) — then that channel's
 theme.js / sfx_presets.js / channel.json (crt, encoder) apply, and nothing from any other channel.
@@ -86,7 +88,7 @@ def stage_t(job: Job) -> dict:
     crt = script.get("crt", job.channel.get("crt", True))
     tl = {"version": 3, "title": script.get("title", job.ep.name), "channel": job.slug, "fps": FPS, "total": total,
           "crt": bool(crt), "bpm": (script.get("groove") or {}).get("bpm", script.get("bpm", 120)),
-          "groove": script.get("groove"), "mix": script.get("mix"), "beats": beats, "words": []}
+          "groove": script.get("groove"), "mix": script.get("mix"), "audio": script.get("audio"), "beats": beats, "words": []}
     job.build.mkdir(parents=True, exist_ok=True)
     tl_json = job.build / "timeline.json"
     if not tl_json.exists() or read_json(tl_json) != tl:      # rewrite only on change, so frame caching works
@@ -138,7 +140,7 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
     total = min(float(tl["total"]), args.max_seconds or 1e9)
     n_frames = int(math.ceil(total * FPS))
     deps = [job.ep / "simulation.js", job.build / "timeline.json"] + job.kit_files() + job.engine_files()
-    if not args.force and not args.max_seconds and not is_stale([frames_out, log_out], deps):
+    if not args.force and not args.max_seconds and not qa and not is_stale([frames_out, log_out, work / "safe_zone_report.json"], deps):
         if read_json(log_out).get("total_frames") == n_frames:
             log("B  frames up to date (cached)", "step")
             return n_frames, total
@@ -173,6 +175,7 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
                 log(f"   frame {done}/{n_frames}  ({pct}%, {done / max(time.time() - t0, 1e-6):.0f} fps)")
                 last = pct
         audio = page.evaluate("window.getAudioLogV3()")
+        safety = page.evaluate("window.getSafeZoneReportV3 ? window.getSafeZoneReportV3() : null")
         browser.close()
     enc.stdin.close()
     if enc.wait() != 0:
@@ -181,6 +184,8 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
     audio["pulses"] = [p for p in audio["pulses"] if p["frame"] < n_frames]
     audio.update({"total_frames": n_frames, "duration": total})
     write_json(log_out, audio)
+    if safety is not None:
+        write_json(work / "safe_zone_report.json", safety)
     log(f"frames done in {time.time() - t0:.1f}s · {len(audio['events'])} hits, {len(audio['pulses'])} pulses, "
         f"{len(audio['synth'])} continuous voices", "ok")
     return n_frames, total
@@ -192,9 +197,40 @@ def stage_c(job: Job, tl: dict, total: float):
     log("C  synthesizing mix_v3.wav (frame-locked chiptune + foley, no voice)", "step")
     data = read_json(job.build / "audio_log_v3.json")
     info = synth_v3.synthesize_v3(data, total, job.build / "mix_v3.wav", groove=tl.get("groove"),
-                                  channel_dir=job.channel_dir, mix=tl.get("mix"))
+                                  channel_dir=job.channel_dir, mix=tl.get("mix"), audio=tl.get("audio"))
     log(f"mix_v3.wav: {info['events']} hits, {info['pulses']} pulses, {info['groove_steps']} groove steps, "
-        f"{info['voices']} voices, peak {info['peak_db']:.1f} dBFS", "ok")
+        f"{info['voices']} voices, highest note {info['max_note_hz']} Hz, peak {info['peak_db']:.1f} dBFS", "ok")
+    master_loudness(job.build / "mix_v3.wav", target=float((tl.get("audio") or {}).get("lufs", -14.0)))
+
+
+def measure_lufs(wav: Path) -> float | None:
+    p = subprocess.run([which_ffmpeg(), "-hide_banner", "-nostats", "-i", str(wav), "-af", "loudnorm=print_format=json",
+                        "-f", "null", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    txt = p.stderr.decode("utf-8", "replace")
+    try:
+        return float(json.loads(txt[txt.rindex("{"): txt.rindex("}") + 1])["input_i"])
+    except Exception:
+        return None
+
+
+def master_loudness(wav: Path, target: float = -14.0):
+    """Mastering: one clean gain to the target loudness, then the lookahead limiter holds peaks at -1 dBFS.
+    (The 0.16 voice / 0.75 master chain is intentionally quiet; this restores platform loudness without
+    FFmpeg's dynamic loudnorm mode, which can pump.)"""
+    import synth_v3
+    from common import load_audio, write_wav
+    for _ in range(2):                                   # 2nd pass corrects the small drop caused by limiting
+        lufs = measure_lufs(wav)
+        if lufs is None or lufs < -70:
+            log("loudness measurement failed / silent mix — skipping mastering", "warn")
+            return
+        gain_db = max(-20.0, min(30.0, target - lufs))
+        if abs(gain_db) < 0.3:
+            break
+        x = load_audio(wav, channels=2) * (10 ** (gain_db / 20))
+        write_wav(wav, synth_v3.lookahead_limit(x.astype(np.float32), ceiling_db=-1.0))
+        log(f"mastering: {lufs:.1f} LUFS {gain_db:+.1f} dB -> limiter (-1 dBFS ceiling)")
+    log(f"mastered to {measure_lufs(wav):.1f} LUFS (target {target:.0f})", "ok")
 
 
 # ------------------------------------------------------------------ E: encode
@@ -241,7 +277,7 @@ def stage_e(job: Job, tl: dict, total: float) -> Path:
     out = out_dir / (f"{ep.name}_preview.mp4" if args.max_seconds else f"{ep.name}.mp4")
     crt = bool(tl.get("crt", True)) and not args.no_crt
     log(f"E  encode: 4x upscale{' + CRT' if crt else ''} + mix_v3.wav -> {job.encoder}", "step")
-    af = loudnorm_filter(b / "mix_v3.wav") + ",aresample=48000"
+    af = "aresample=48000"                     # mix_v3.wav is already mastered to -14 LUFS / -1 dBFS in stage C
     cmd = [which_ffmpeg(), "-y", "-v", "error", "-stats", "-i", "frames_lowres.mkv", "-i", "mix_v3.wav"]
     if crt:
         make_scanlines(b / "scanlines.png")
@@ -263,6 +299,29 @@ def stage_e(job: Job, tl: dict, total: float) -> Path:
         shutil.copy2(out, ex / out.name)
         log(f"copied to {ex / out.name}")
     return out
+
+
+# ------------------------------------------------------------------ safe-zone check
+def safe_zone_check(work: Path, dest: Path | None = None) -> list[dict]:
+    """Read the per-render safe-zone report; print violations. Returns the violation list."""
+    rp = work / "safe_zone_report.json"
+    if not rp.exists():
+        return []
+    rep = read_json(rp)
+    if dest:
+        write_json(dest, rep)
+    v = rep.get("violations", [])
+    sp = rep.get("safe_px", {})
+    if not v:
+        log(f"safe zone OK — every text box / node stayed inside x {sp.get('left')}..{sp.get('right')}, "
+            f"y {sp.get('top')}..{sp.get('bottom')}", "ok")
+    else:
+        log(f"{len(v)} element(s) left the UI-safe box (x {sp.get('left')}..{sp.get('right')}, y {sp.get('top')}..{sp.get('bottom')}):", "warn")
+        for e in v[:12]:
+            a = e.get("at") or {}
+            log(f"   {e['kind']:5s} '{e['label']}'  over by {e['maxOverflowPx']}px at t={a.get('t')}s "
+                f"(box x={a.get('x')} y={a.get('y')} w={a.get('w')} h={a.get('h')}), {e['frames']} frames", "warn")
+    return v
 
 
 # ------------------------------------------------------------------ preview-only QA
@@ -304,6 +363,12 @@ def preview_only(job: Job, tl: dict):
     run([which_ffmpeg(), "-y", "-v", "error", "-i", "frames_lowres.mkv", "-filter_complex", video_chain(False, (540, 960)),
          "-map", "[vout]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", str(qa / "preview.mp4")], cwd=work)
     log(f"QA ready: {qa}  (qa_hook / qa_mid1 / qa_mid2 / qa_payoff .png, qa_sheet.png, silent preview.mp4)", "ok")
+    bad = safe_zone_check(work, qa / "safe_zone_report.json")
+    if bad:
+        log("QA FAILED — fix the elements above (magenta outlines in the QA PNGs), e.g. with "
+            "Camera.track({fit:[x,y,w,h]}) / fitBoundsToSafeZone(), then re-run --preview-only.", "warn")
+        sys.exit(2)
+    log("QA PASSED", "ok")
 
 
 # ------------------------------------------------------------------ main
@@ -340,6 +405,8 @@ def main():
     total = min(float(tl["total"]), args.max_seconds or 1e9)
     if "B" in args.steps.upper():
         _, total = stage_b(job, tl, job.build)
+    if "B" in args.steps.upper() and safe_zone_check(job.build):
+        log("safe-zone violations found in the full render (see above) — run --preview-only to inspect", "warn")
     if "C" in args.steps.upper():
         stage_c(job, tl, total)
     if "E" in args.steps.upper():
