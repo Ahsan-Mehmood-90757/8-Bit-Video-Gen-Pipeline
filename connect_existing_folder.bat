@@ -11,8 +11,14 @@ set GIT=git
 where git >nul 2>nul || set GIT="C:\Program Files\Git\cmd\git.exe"
 
 if exist .git (
-  echo This folder is already a git repository - nothing to do.
-  goto done
+  %GIT% remote get-url origin >nul 2>nul && (
+    echo This folder is already linked to GitHub - nothing to do.
+    goto done
+  )
+  REM A .git with no remote = a fresh local repo (e.g. GitHub Desktop's "create a repository here"
+  REM with an "Initial commit" of these same files). Replace it with the real GitHub history.
+  echo == Found an unlinked local repository ^(no GitHub remote^) - replacing it with the GitHub one
+  rmdir /s /q .git || goto fail
 )
 
 echo == Linking %CD% to GitHub

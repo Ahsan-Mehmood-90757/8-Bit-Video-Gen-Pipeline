@@ -75,6 +75,8 @@ Optional render flags:
   3. Switch *Current branch* to **V3**.
   4. Run `setup_v3.bat` in that folder.
 - **A folder that already has the files but no `.git`:** double-click `connect_existing_folder.bat` in it. Then choose *File → Add local repository* and select the folder.
+  - Don't let GitHub Desktop "create a repository here", and don't click *Publish repository*. Either one makes a separate repo with no link to GitHub.
+  - If that already happened, run the script anyway. It replaces the unlinked repo with the real one and doesn't touch your files.
 - Commit and push from the *Changes* tab. Use *Fetch origin* / *Pull* to bring in changes made on the other PC.
 
 ## Keeping two PCs in sync
