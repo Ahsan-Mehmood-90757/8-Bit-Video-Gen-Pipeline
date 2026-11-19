@@ -24,10 +24,9 @@
   const FPS = R.FPS, W = R.W, H = R.H;
   const rnd = Math.round;
 
-  // ---- v3 safe zone: whole 900x1420 rect (no caption band in visual-first mode)
-  Object.assign(R.SAFE, { x: 22, y: 55, w: 226, h: 355 });
-  R.SAFE_V3 = R.SAFE;
+  // ---- v3 safe zone is defined in engine_v3/safe_zone_v3.js (SAFE_LEFT/RIGHT/TOP/BOTTOM)
   R.VERSION = 3;
+  const SCX = () => R.SAFE.x + R.SAFE.w / 2;   // safe-zone centre (asymmetric: wider right margin)
 
   // ---- audio helpers
   R.pulse = (kind, o = {}) => window.logBeatPulseV3(R.frame, Object.assign({ kind }, o));
@@ -126,7 +125,8 @@
     const fadeK = m.left < 0.2 ? R.clamp(m.left / 0.2, 0, 1) : 1;
     ctx.save();
     ctx.globalAlpha = fadeK;
-    const x = r.x + dx, y = r.y + dy - rnd((1 - fadeK) * 3);
+    const A = R.SAFE;
+    const x = R.clamp(r.x + dx, A.x, A.x + A.w - r.w), y = R.clamp(r.y + dy, A.y, A.y + A.h - r.h);   // animations never leave the safe box
     R.screen(() => {
       // pointer to the target (dark-outlined so it reads on any background)
       const inside = m.ax >= r.x && m.ax <= r.x + r.w && m.ay >= r.y && m.ay <= r.y + r.h;
@@ -162,24 +162,27 @@
     const A = R.SAFE, color = o.color || PAL.gold;
     let s = 2;
     const lines = String(text).toUpperCase().split('\n');
-    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > A.w - 12) s--;
+    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > A.w - 16) s--;
     const th = lines.length * 9 * s, sub = o.sub ? String(o.sub).toUpperCase() : null;
     const h = th + 8 + (sub ? 11 : 0);
     const slam = R.clamp(age / 0.18, 0, 1);
     const fadeK = dur - age < 0.25 ? (dur - age) / 0.25 : 1;
-    const y0 = (o.y === undefined ? A.y + 2 : o.y) - rnd((1 - R.ease.outBack(slam)) * 40) - rnd((1 - fadeK) * 8);
+    const y0 = o.y === undefined ? A.y + 1 : o.y;
+    const reveal = Math.max(1, rnd(h * R.clamp(R.ease.outBack(slam), 0, 1)));      // slams down from the safe top edge
     const shake = age < 0.4 ? rnd(Math.sin(R.frame * 3.1) * 2 * (1 - age / 0.4)) : 0;
+    const bw = A.w - 6, bx = A.x + 2 + shake;                                       // 2px headroom each side for the shake
     const ctx = I.ctx;
     ctx.save(); ctx.globalAlpha = fadeK;
+    ctx.beginPath(); ctx.rect(A.x, y0, A.w, reveal + 3); ctx.clip();
     R.screen(() => {
-      R.rect(A.x + 2 + shake, y0 + 2, A.w, h, PAL.black);
-      R.rect(A.x + shake, y0, A.w, h, age < 2 / 60 ? PAL.white : color);
-      R.rect(A.x + 2 + shake, y0 + 2, A.w - 4, h - 4, PAL.bg);
-      lines.forEach((l, i) => R.text(l, W / 2 + shake, y0 + 5 + i * 9 * s, { color, scale: s, align: 'center' }));
-      if (sub) R.text(sub, W / 2 + shake, y0 + 6 + th, { color: PAL.text, align: 'center' });
+      R.rect(bx + 2, y0 + 2, bw, h, PAL.black);
+      R.rect(bx, y0, bw, h, age < 2 / 60 ? PAL.white : color);
+      R.rect(bx + 2, y0 + 2, bw - 4, h - 4, PAL.bg);
+      lines.forEach((l, i) => R.text(l, SCX() + shake, y0 + 5 + i * 9 * s, { color, scale: s, align: 'center' }));
+      if (sub) R.text(sub, SCX() + shake, y0 + 6 + th, { color: PAL.text, align: 'center' });
     });
     ctx.restore();
-    R.reserve(A.x, y0, A.w, h);
+    R.reserve(A.x, y0, A.w, h + 2);
   };
 
   // ================================================================== Payoff stamp (final ~3 s)
@@ -190,38 +193,27 @@
     const A = R.SAFE, color = o.color || PAL.emerald;
     const lines = String(text).toUpperCase().split('\n');
     let s = o.size || 3;
-    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > A.w - 20) s--;
-    const big = age < 0.1 && s < 4 && Math.max(...lines.map(l => R.textWidth(l, s + 1))) <= A.w - 20 ? s + 1 : s;  // slam from one size up
+    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > A.w - 18) s--;
+    const big = age < 0.1 && s < 4 && Math.max(...lines.map(l => R.textWidth(l, s + 1))) <= A.w - 18 ? s + 1 : s;  // slam from one size up
     const tw = Math.max(...lines.map(l => R.textWidth(l, big)));
     const sub = o.sub ? String(o.sub).toUpperCase() : null;
     const w = tw + 16, h = lines.length * 9 * big + 12 + (sub ? 12 : 0);
     const cy = o.y === undefined ? A.y + A.h / 2 : o.y;
-    const x = rnd(W / 2 - w / 2) + (age < 0.3 ? rnd(Math.sin(R.frame * 2.9) * 3 * (1 - age / 0.3)) : 0), y = rnd(cy - h / 2);
-    if (R.crossed(t0)) R.burst(W / 2, cy, 34, [color, PAL.gold, PAL.white], 2.4);
+    const shk = age < 0.3 ? rnd(Math.sin(R.frame * 2.9) * 3 * (1 - age / 0.3)) : 0;
+    const x = R.clamp(rnd(SCX() - w / 2) + shk, A.x, A.x + A.w - w - 3), y = R.clamp(rnd(cy - h / 2), A.y, A.y + A.h - h - 3);
+    if (R.crossed(t0)) R.burst(SCX(), cy, 34, [color, PAL.gold, PAL.white], 2.4);
     R.screen(() => {
       R.rect(x + 3, y + 3, w, h, PAL.black);
       R.rect(x, y, w, h, age < 2 / 60 ? PAL.white : color);
       R.rect(x + 2, y + 2, w - 4, h - 4, PAL.bg);
       R.rect(x + 4, y + 4, w - 8, h - 8, color);
       R.rect(x + 5, y + 5, w - 10, h - 10, PAL.bg);
-      lines.forEach((l, i) => R.text(l, W / 2 + (x - rnd(W / 2 - w / 2)), y + 7 + i * 9 * big, { color, scale: big, align: 'center' }));
-      if (sub) R.text(sub, W / 2, y + h - 12, { color: PAL.text, align: 'center' });
+      lines.forEach((l, i) => R.text(l, x + w / 2, y + 7 + i * 9 * big, { color, scale: big, align: 'center' }));
+      if (sub) R.text(sub, x + w / 2, y + h - 12, { color: PAL.text, align: 'center' });
     });
     R.reserve(x, y, w, h);
   };
 
-  // ================================================================== QA guides for v3 (?qa=3)
-  const QA3 = new URLSearchParams(location.search).get('qa') === '3';
-  function qaGuides() {
-    const A = R.SAFE, c = '#F43F5E';
-    R.screen(() => {
-      R.dashed(A.x, A.y, A.x + A.w, A.y, c, 3, 2); R.dashed(A.x, A.y + A.h, A.x + A.w, A.y + A.h, c, 3, 2);
-      R.dashed(A.x, A.y, A.x, A.y + A.h, c, 3, 2); R.dashed(A.x + A.w, A.y, A.x + A.w, A.y + A.h, c, 3, 2);
-      R.text(`QA ${R.t.toFixed(2)}S ${R.currentBeat() || ''}`, 2, 2, { color: c, shadow: false });
-    });
-  }
-
   Retro.hooks.reset.push(() => { queue.length = 0; microRes.length = 0; tempoFromTimeline(); });
   Retro.hooks.afterDraw.push(flushMicro);
-  if (QA3) Retro.hooks.afterDraw.push(qaGuides);
 })();
