@@ -66,10 +66,11 @@
       const a = R.toScreen(x, y), b = R.toScreen(x + w, y + h);
       x = Math.min(a.x, b.x); y = Math.min(a.y, b.y); w = Math.abs(b.x - a.x); h = Math.abs(b.y - a.y);
     }
-    frameBoxes.push({ x, y, w, h, kind, label: String(label || '').slice(0, 40) });
+    const alpha = R._alphaHint != null ? R._alphaHint : I.ctx.globalAlpha;
+    frameBoxes.push({ x, y, w, h, kind, label: String(label || '').slice(0, 40), alpha });
   }
   R.node = (x, y, w, h, label = 'node') => track(x, y, w, h, 'node', label);   // explicit "active node"
-  R.trackUI = (rect, kind, label) => rect && track(rect.x, rect.y, rect.w, rect.h, kind, label);
+  R.trackUI = (rect, kind, label) => rect && track(rect.x, rect.y, rect.w, rect.h, kind, label, true);   // rect is in SCREEN coords
 
   // World-space text/boxes that would be CUT OFF by the camera view edge are not drawn at all
   // (zoomed arrays show only whole nodes); they are counted in the report as "hidden".
@@ -99,7 +100,8 @@
       const p = R.inWorld() ? R.toScreen(x, y) : { x, y };
       let bx = p.x;
       if (o.align === 'center') bx = p.x - w / 2; else if (o.align === 'right') bx = p.x - w;
-      track(bx, p.y, w, (lines.length - 1) * (o.lineHeight || 9) * s + 7 * s, 'text', str, true);
+      // {data:true} marks values (array items, counts) — exempt from the word / static-text rules
+      track(bx, p.y, w, (lines.length - 1) * (o.lineHeight || 9) * s + 7 * s, o.data ? 'data' : 'text', str, true);
     }
     return res;
   };
@@ -111,8 +113,42 @@
   const origTag = R.tag;   // R.tag always returns SCREEN coordinates
   R.tag = function (str, x, y, c, o) { const r = origTag.call(R, str, x, y, c, o); if (r) track(r.x, r.y, r.w, r.h, 'tag', str, true); return r; };
 
+  // ---- text rules (v3 reactive text): <= MAX_WORDS words per text element; no BRIGHT text (alpha >= 0.6)
+  //      may sit on screen unchanged for more than STATIC_S seconds (dim it or clear it). Digits = data, exempt.
+  let MAX_WORDS = 4, STATIC_S = 5;                                  // timeline.text_rules can override (read at boot)
+  Retro.hooks.reset.push(() => {
+    const T0 = (window.EPISODE_TIMELINE && window.EPISODE_TIMELINE.text_rules) || {};
+    MAX_WORDS = T0.max_words || 4; STATIC_S = T0.static_seconds || 5;
+  });
+  const streak = new Map(), lastPos = new Map();
+  const wordCount = (str) => String(str).trim().split(/\s+/).filter(w => /[A-Z0-9]/i.test(w)).length;
+  function flag(kind, label, extra) {
+    const key = kind + ':' + label;
+    const r = report.get(key) || { kind, label, firstFrame: R.frame, lastFrame: R.frame, frames: 0, maxOverflowPx: 0, at: { t: +(R.frame / R.FPS).toFixed(2) }, ...extra };
+    r.lastFrame = R.frame; r.frames++;
+    report.set(key, r);
+  }
+  function textRules() {
+    const seen = new Set();
+    for (const b of frameBoxes) {
+      if (b.kind !== 'text' || !b.label || b.alpha < 0.6) continue;
+      if (wordCount(b.label) > MAX_WORDS) flag('words', b.label, { words: wordCount(b.label), rule: `<= ${MAX_WORDS} words` });
+      if (seen.has(b.label)) continue;
+      seen.add(b.label);
+      // a text element that moves (e.g. a pointer tag re-popping on each hop) is reacting, so its clock restarts
+      const prev = lastPos.get(b.label);
+      const moved = prev && (Math.abs(prev.x - b.x) > 2 || Math.abs(prev.y - b.y) > 2);
+      lastPos.set(b.label, { x: b.x, y: b.y });
+      const n = moved ? 1 : (streak.get(b.label) || 0) + 1;
+      streak.set(b.label, n);
+      if (n === Math.round(STATIC_S * R.FPS) + 1) flag('static', b.label, { rule: `bright for > ${STATIC_S}s — dim or clear it` });
+    }
+    for (const k of [...streak.keys()]) if (!seen.has(k)) { streak.delete(k); lastPos.delete(k); }
+  }
+
   function evaluate() {
     const eps = 0.01;
+    textRules();
     for (const b of frameBoxes) {
       const over = Math.max(SZ.l - b.x, b.x + b.w - SZ.r, SZ.t - b.y, b.y + b.h - SZ.b);
       if (over > eps) {
@@ -150,7 +186,7 @@
 
   Retro.hooks.afterUpdate.push(() => { frameBoxes.length = 0; tracking = true; });
   Retro.hooks.afterDraw.push(() => { evaluate(); tracking = false; if (QA) qaOverlay(); });
-  Retro.hooks.reset.push(() => { report.clear(); hidden.clear(); frameBoxes.length = 0; });
+  Retro.hooks.reset.push(() => { report.clear(); hidden.clear(); streak.clear(); lastPos.clear(); frameBoxes.length = 0; });
 
   window.getSafeZoneReportV3 = () => ({
     safe_px: SAFE_PX,

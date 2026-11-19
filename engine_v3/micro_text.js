@@ -64,7 +64,7 @@
     let p = R.inWorld() ? R.toScreen(x, y) : { x, y };
     let bx = p.x; if (o.align === 'center') bx = p.x - w / 2; else if (o.align === 'right') bx = p.x - w;
     bx = rnd(bx); const by = rnd(p.y);
-    if (R.inWorld() && !R.inView(bx, by, w, 5 * s)) return w;           // never draw cut-off digits
+    if (R.inWorld() && !R.screen(() => R.inView(bx, by, w, 5 * s))) return w;   // (screen coords) never draw cut-off digits
     const pass = (c, dx, dy) => {
       ctx.fillStyle = c;
       let cx = bx + dx;
@@ -76,9 +76,44 @@
     };
     if (o.shadow) pass(o.shadow === true ? PAL.black : o.shadow, 1, 1);
     pass(o.color || PAL.white, 0, 0);
-    if (R.trackUI) R.trackUI({ x: bx, y: by, w, h: 5 * s }, 'text', txt);
+    if (R.trackUI) R.trackUI({ x: bx, y: by, w, h: 5 * s }, 'data', txt);
     return w;
   };
+
+  // ================================================================== Pop-scale helper
+  // Every v3 text element pops in: scale 0.7 -> 1.05 -> 1.0 over 120 ms. The element is drawn normally, lifted
+  // off the canvas (only the pixels it changed), and re-drawn scaled about its centre with nearest-neighbour.
+  R.popScale = function (age) {
+    const k = age / 0.12;
+    if (k >= 1 || k < 0) return 1;
+    return k < 0.5 ? 0.7 + 0.35 * (k / 0.5) : 1.05 - 0.05 * ((k - 0.5) / 0.5);
+  };
+  const popCanvas = document.createElement('canvas'), popCtx = popCanvas.getContext('2d', { willReadFrequently: true });
+  R.popBlit = function (x, y, w, h, scale, alpha, drawFn) {
+    const ctx = I.ctx;
+    R._alphaHint = alpha;
+    if (Math.abs(scale - 1) < 1e-3) {
+      ctx.save(); ctx.globalAlpha = alpha; drawFn(); ctx.restore();
+      R._alphaHint = null; return;
+    }
+    const T = ctx.getTransform();
+    const x0 = Math.max(0, Math.floor(x + T.e)), y0 = Math.max(0, Math.floor(y + T.f));
+    const w0 = Math.min(R.W - x0, Math.ceil(w) + 1), h0 = Math.min(R.H - y0, Math.ceil(h) + 1);
+    if (w0 <= 0 || h0 <= 0) { R._alphaHint = null; return; }
+    const bg = ctx.getImageData(x0, y0, w0, h0);
+    drawFn();
+    const fg = ctx.getImageData(x0, y0, w0, h0);
+    ctx.putImageData(bg, x0, y0);
+    const a = bg.data, b = fg.data;
+    for (let i = 0; i < b.length; i += 4) if (a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2]) b[i + 3] = 0;
+    popCanvas.width = w0; popCanvas.height = h0; popCtx.putImageData(fg, 0, 0);
+    const sw = Math.max(1, Math.round(w0 * scale)), sh = Math.max(1, Math.round(h0 * scale));
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = alpha; ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(popCanvas, Math.round(x0 + w0 / 2 - sw / 2), Math.round(y0 + h0 / 2 - sh / 2), sw, sh);
+    ctx.restore();
+    R._alphaHint = null;
+  };
+  R._alphaHint = null;
 
   // ================================================================== Impact micro-text
   const queue = [];
@@ -118,7 +153,7 @@
 
   function flushMicro() {
     if (!queue.length) { microRes.length = 0; return; }
-    const A = R.SAFE;
+    const S0 = R.SAFE, A = { x: S0.x + 3, y: S0.y + 3, w: S0.w - 6, h: S0.h - 6 };   // inset: room for the 1.05 pop overshoot
     const list = queue.splice(0).sort((a, b) => ((b.o.priority || 0) - (a.o.priority || 0)) || (a.n - b.n));
     const placed = microRes.splice(0);
     for (const m of list) {
@@ -131,7 +166,7 @@
       else { x = m.ax - bw / 2; y = m.ay - bh - 9; }
       x = R.clamp(rnd(x), A.x, A.x + A.w - bw); y = R.clamp(rnd(y), A.y, A.y + A.h - bh);
       const r = { x, y, w: bw, h: bh };
-      let guard = 0, dir = -1;
+      let guard = m.o.fixed ? 99 : 0, dir = -1;                       // fixed: exact position, no collision push
       while (guard++ < 30) {
         const hit = placed.find(q => overlap(r, q));
         if (!hit) break;
@@ -147,18 +182,17 @@
   function drawMicro(m, r) {
     const st = m.st, s = m.size, anim = m.o.anim || st.anim, ctx = I.ctx;
     const accent = m.color || (st.fill ? st.fill() : PAL.gold);
-    const kPop = R.clamp(m.age / 0.16, 0, 1);
-    let dx = 0, dy = 0;
-    if (anim.includes('pop')) dy = rnd((1 - R.ease.outBack(kPop)) * 6);
+    let dx = 0;
+    const dy = 0;
     if (anim.includes('shake') && m.age < 0.35) dx = rnd(Math.sin(R.frame * 2.7) * 2 * (1 - m.age / 0.35));
+    const scale = R.popScale(m.age);                                  // 0.7 -> 1.05 -> 1.0 over 120 ms
     const flashOn = anim.includes('flash') ? (m.age < 0.6 && Math.floor(m.age * 60 / 4) % 2 === 0) : false;
     const white = R.frame !== undefined && m.age < 2 / 60;   // 2-frame white impact flash
     const fadeK = m.left < 0.2 ? R.clamp(m.left / 0.2, 0, 1) : 1;
-    ctx.save();
-    ctx.globalAlpha = fadeK;
+    const dimK = m.o.dimAfter !== undefined && m.age > m.o.dimAfter ? R.lerp(1, m.o.dimTo === undefined ? 0.4 : m.o.dimTo, R.clamp((m.age - m.o.dimAfter) / 0.15, 0, 1)) : 1;
     const A = R.SAFE;
     const x = R.clamp(r.x + dx, A.x, A.x + A.w - r.w), y = R.clamp(r.y + dy, A.y, A.y + A.h - r.h);   // animations never leave the safe box
-    R.screen(() => {
+    R.popBlit(x - 1, y - 1, r.w + 4, r.h + 4, scale, fadeK * dimK, () => R.screen(() => {
       // pointer to the target (dark-outlined so it reads on any background)
       const inside = m.ax >= r.x && m.ax <= r.x + r.w && m.ay >= r.y && m.ay <= r.y + r.h;
       if (m.o.pointer !== false && !inside && st !== STYLE.formula) {
@@ -181,39 +215,33 @@
       const tcol = flashOn || white ? PAL.coral : (st.text ? st.text() : accent);
       const off = st.double ? 2 : 0;
       R.text(txt, x + 4 * s + off, y + 3 + off + (s > 1 ? 1 : 0), { color: tcol, scale: s, shadow: false });
-    });
-    ctx.restore();
+    }));
+    void ctx;
   }
 
   // ================================================================== Hook banner (first ~3 s)
   R.hookBanner = function (text, o = {}) {
-    const t0 = o.t0 || 0, dur = o.dur === undefined ? 3 : o.dur, age = R.t - t0;
+    const t0 = o.t0 || 0, dur = o.dur === undefined ? 2.2 : o.dur, age = R.t - t0;
     if (o.sfx !== false && R.crossed(t0)) R.sfx(o.sfx || 'banner');
     if (age < 0 || age > dur) return;
     const A = R.SAFE, color = o.color || PAL.gold;
-    let s = 2;
+    let s = o.size || 2;
     const lines = String(text).toUpperCase().split('\n');
-    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > A.w - 16) s--;
+    const bw = A.w - 14;                                               // 1.05x overshoot stays inside the safe box
+    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > bw - 10) s--;
     const th = lines.length * 9 * s, sub = o.sub ? String(o.sub).toUpperCase() : null;
     const h = th + 8 + (sub ? 11 : 0);
-    const slam = R.clamp(age / 0.18, 0, 1);
-    const fadeK = dur - age < 0.25 ? (dur - age) / 0.25 : 1;
-    const y0 = o.y === undefined ? A.y + 1 : o.y;
-    const reveal = Math.max(1, rnd(h * R.clamp(R.ease.outBack(slam), 0, 1)));      // slams down from the safe top edge
-    const shake = age < 0.4 ? rnd(Math.sin(R.frame * 3.1) * 2 * (1 - age / 0.4)) : 0;
-    const bw = A.w - 6, bx = A.x + 2 + shake;                                       // 2px headroom each side for the shake
-    const ctx = I.ctx;
-    ctx.save(); ctx.globalAlpha = fadeK;
-    ctx.beginPath(); ctx.rect(A.x, y0, A.w, reveal + 3); ctx.clip();
-    R.screen(() => {
-      R.rect(bx + 2, y0 + 2, bw, h, PAL.black);
-      R.rect(bx, y0, bw, h, age < 2 / 60 ? PAL.white : color);
-      R.rect(bx + 2, y0 + 2, bw - 4, h - 4, PAL.bg);
-      lines.forEach((l, i) => R.text(l, SCX() + shake, y0 + 5 + i * 9 * s, { color, scale: s, align: 'center' }));
-      if (sub) R.text(sub, SCX() + shake, y0 + 6 + th, { color: PAL.text, align: 'center' });
-    });
-    ctx.restore();
-    R.reserve(A.x, y0, A.w, h + 2);
+    const fadeK = dur - age < 0.2 ? (dur - age) / 0.2 : 1;
+    const y0 = o.y === undefined ? A.y + 8 : o.y, bx = rnd(A.x + (A.w - bw) / 2);
+    const shake = age > 0.12 && age < 0.4 ? rnd(Math.sin(R.frame * 3.1) * 1.5 * (1 - age / 0.4)) : 0;
+    R.popBlit(bx - 1, y0 - 1, bw + 4, h + 4, R.popScale(age), fadeK, () => R.screen(() => {
+      R.rect(bx + 2 + shake, y0 + 2, bw, h, PAL.black);
+      R.rect(bx + shake, y0, bw, h, age < 2 / 60 ? PAL.white : color);
+      R.rect(bx + 2 + shake, y0 + 2, bw - 4, h - 4, PAL.bg);
+      lines.forEach((l, i) => R.text(l, bx + bw / 2 + shake, y0 + 5 + i * 9 * s, { color, scale: s, align: 'center' }));
+      if (sub) R.text(sub, bx + bw / 2 + shake, y0 + 6 + th, { color: PAL.text, align: 'center' });
+    }));
+    R.reserve(bx, y0, bw, h + 2);
   };
 
   // ================================================================== Payoff stamp (final ~3 s)
@@ -224,8 +252,8 @@
     const A = R.SAFE, color = o.color || PAL.emerald;
     const lines = String(text).toUpperCase().split('\n');
     let s = o.size || 3;
-    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > A.w - 18) s--;
-    const big = age < 0.1 && s < 4 && Math.max(...lines.map(l => R.textWidth(l, s + 1))) <= A.w - 18 ? s + 1 : s;  // slam from one size up
+    while (s > 1 && Math.max(...lines.map(l => R.textWidth(l, s))) > A.w - 32) s--;   // room for the 1.05 pop
+    const big = s;
     const tw = Math.max(...lines.map(l => R.textWidth(l, big)));
     const sub = o.sub ? String(o.sub).toUpperCase() : null;
     const w = tw + 16, h = lines.length * 9 * big + 12 + (sub ? 12 : 0);
@@ -233,7 +261,7 @@
     const shk = age < 0.3 ? rnd(Math.sin(R.frame * 2.9) * 3 * (1 - age / 0.3)) : 0;
     const x = R.clamp(rnd(SCX() - w / 2) + shk, A.x, A.x + A.w - w - 3), y = R.clamp(rnd(cy - h / 2), A.y, A.y + A.h - h - 3);
     if (R.crossed(t0)) R.burst(SCX(), cy, 34, [color, PAL.gold, PAL.white], 2.4);
-    R.screen(() => {
+    R.popBlit(x - 1, y - 1, w + 5, h + 5, R.popScale(age), 1, () => R.screen(() => {
       R.rect(x + 3, y + 3, w, h, PAL.black);
       R.rect(x, y, w, h, age < 2 / 60 ? PAL.white : color);
       R.rect(x + 2, y + 2, w - 4, h - 4, PAL.bg);
@@ -241,7 +269,7 @@
       R.rect(x + 5, y + 5, w - 10, h - 10, PAL.bg);
       lines.forEach((l, i) => R.text(l, x + w / 2, y + 7 + i * 9 * big, { color, scale: big, align: 'center' }));
       if (sub) R.text(sub, x + w / 2, y + h - 12, { color: PAL.text, align: 'center' });
-    });
+    }));
     R.reserve(x, y, w, h);
   };
 
