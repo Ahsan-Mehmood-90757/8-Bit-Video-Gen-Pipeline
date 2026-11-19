@@ -1,0 +1,22 @@
+window.SFX_PRESETS = {
+  "_doc": "Shared 8-bit SFX definitions. Read by engine/retro_audio.js (browser preview) AND pipeline/synth_sfx.py (final render). Keep this file strict JSON after the '=' sign. Each preset is a list of layers. wave: square|triangle|saw|sine|noise. freq->freqEnd is an exponential sweep over 'dur'. ADSR: a,d (seconds), s (sustain level 0-1), r (release seconds, after dur). arp: semitone offsets cycled every arpStep seconds. vib: [rateHz, depth]. delay: layer start offset (s). crush: bit depth (0 = off).",
+  "tick":      [{"wave": "square",   "duty": 0.5,   "freq": 1760, "freqEnd": 1760, "dur": 0.018, "a": 0.001, "d": 0.012, "s": 0.0, "r": 0.01, "vol": 0.35}],
+  "click":     [{"wave": "square",   "duty": 0.25,  "freq": 2400, "freqEnd": 1200, "dur": 0.012, "a": 0.0005, "d": 0.01, "s": 0.0, "r": 0.006, "vol": 0.3}],
+  "blip":      [{"wave": "square",   "duty": 0.5,   "freq": 880,  "freqEnd": 880,  "dur": 0.05,  "a": 0.002, "d": 0.03, "s": 0.4, "r": 0.03, "vol": 0.4}],
+  "coin":      [{"wave": "square",   "duty": 0.5,   "freq": 988,  "freqEnd": 988,  "dur": 0.22,  "a": 0.002, "d": 0.08, "s": 0.55, "r": 0.12, "vol": 0.42, "arp": [0, 5], "arpStep": 0.07}],
+  "pulse":     [{"wave": "triangle", "freq": 220,  "freqEnd": 110,  "dur": 0.09,  "a": 0.002, "d": 0.07, "s": 0.2, "r": 0.06, "vol": 0.8},
+                {"wave": "square",   "duty": 0.125, "freq": 660,  "freqEnd": 440,  "dur": 0.04,  "a": 0.001, "d": 0.03, "s": 0.0, "r": 0.02, "vol": 0.22}],
+  "alert":     [{"wave": "square",   "duty": 0.5,   "freq": 880,  "freqEnd": 880,  "dur": 0.34,  "a": 0.003, "d": 0.02, "s": 0.8, "r": 0.05, "vol": 0.32, "arp": [0, -5], "arpStep": 0.085}],
+  "error":     [{"wave": "saw",      "freq": 196,  "freqEnd": 150,  "dur": 0.22,  "a": 0.004, "d": 0.1, "s": 0.6, "r": 0.08, "vol": 0.32, "crush": 4}],
+  "success":   [{"wave": "square",   "duty": 0.5,   "freq": 523.25, "freqEnd": 523.25, "dur": 0.36, "a": 0.002, "d": 0.05, "s": 0.7, "r": 0.18, "vol": 0.36, "arp": [0, 4, 7, 12], "arpStep": 0.07},
+                {"wave": "triangle", "freq": 261.63, "freqEnd": 261.63, "dur": 0.36, "a": 0.004, "d": 0.1, "s": 0.6, "r": 0.2, "vol": 0.5, "arp": [0, 4, 7, 12], "arpStep": 0.07}],
+  "powerup":   [{"wave": "square",   "duty": 0.25,  "freq": 330,  "freqEnd": 1320, "dur": 0.4,   "a": 0.004, "d": 0.05, "s": 0.8, "r": 0.1, "vol": 0.3, "vib": [18, 0.02]}],
+  "whoosh":    [{"wave": "noise",    "freq": 1500, "freqEnd": 9000, "dur": 0.3,   "a": 0.12, "d": 0.12, "s": 0.3, "r": 0.12, "vol": 0.28}],
+  "explosion": [{"wave": "noise",    "freq": 4000, "freqEnd": 300,  "dur": 0.55,  "a": 0.002, "d": 0.4, "s": 0.25, "r": 0.35, "vol": 0.75},
+                {"wave": "triangle", "freq": 110,  "freqEnd": 40,   "dur": 0.4,   "a": 0.002, "d": 0.3, "s": 0.2, "r": 0.2, "vol": 0.8}],
+  "level":     [{"wave": "square",   "duty": 0.5,   "freq": 392,  "freqEnd": 392,  "dur": 0.5,   "a": 0.002, "d": 0.05, "s": 0.75, "r": 0.2, "vol": 0.3, "arp": [0, 4, 7, 12, 16, 19, 24], "arpStep": 0.055},
+                {"wave": "triangle", "freq": 98,   "freqEnd": 98,   "dur": 0.5,   "a": 0.004, "d": 0.1, "s": 0.7, "r": 0.2, "vol": 0.55}],
+  "type":      [{"wave": "square",   "duty": 0.125, "freq": 1200, "freqEnd": 900,  "dur": 0.015, "a": 0.0005, "d": 0.012, "s": 0.0, "r": 0.008, "vol": 0.22}],
+  "thud":      [{"wave": "triangle", "freq": 150,  "freqEnd": 55,   "dur": 0.12,  "a": 0.001, "d": 0.1, "s": 0.0, "r": 0.05, "vol": 0.9},
+                {"wave": "noise",    "freq": 2500, "freqEnd": 800,  "dur": 0.04,  "a": 0.001, "d": 0.03, "s": 0.0, "r": 0.02, "vol": 0.25}]
+};

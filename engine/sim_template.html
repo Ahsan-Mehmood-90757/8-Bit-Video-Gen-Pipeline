@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Retro Sim — 1080x1920</title>
+<!--
+  Retro simulation host page.
+  URL parameters:
+    sim=<path to simulation.js>          (relative to this file, e.g. ../episodes/ep01/simulation.js)
+    timeline=<path to build/timeline.js> (written by pipeline/tts_and_captions.py; optional)
+    theme=<path to channels/<slug>/theme.js>        (channel look: palette, background, watermark)
+    sfx=<path to channels/<slug>/sfx_presets.js>    (channel SFX overrides; optional)
+    qa=1                                 (draw safe-zone / caption-band guides)
+    render=1                             (set by render_video.py: no rAF loop, frames driven by advanceFrame)
+    crt=0                                (disable scanlines in preview)
+  Open it directly in Chrome/Edge to preview with live 8-bit audio and the narration track:
+    engine/sim_template.html?theme=../channels/_examples/theme.js&sim=../channels/_examples/episodes/ep02_engine/simulation.js&timeline=../channels/_examples/episodes/ep02_engine/build/timeline.js
+  (Chrome may need --allow-file-access-from-files for narration audio on some setups; the sim itself works regardless.)
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: ui-monospace, Consolas, monospace; }
+  #wrap { position: relative; height: 100vh; aspect-ratio: 9 / 16; margin: 0 auto; }
+  #screen { width: 100%; height: 100%; display: block; image-rendering: pixelated; image-rendering: crisp-edges; background: #0B0F19; }
+  #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #FACC15;
+             background: rgba(11,15,25,0.55); font-size: 22px; letter-spacing: 2px; cursor: pointer; text-align: center; }
+  #hud { position: fixed; left: 8px; bottom: 6px; color: #64748B; font-size: 12px; }
+  #err { position: fixed; top: 10px; left: 10px; right: 10px; color: #F43F5E; white-space: pre-wrap; font-size: 14px; }
+  body.render #overlay, body.render #hud { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="screen" width="1080" height="1920"></canvas>
+  <div id="overlay">CLICK TO START<br>(space: pause · R: restart · C: CRT · ←/→: seek)</div>
+</div>
+<div id="hud"></div>
+<div id="err"></div>
+
+<script src="sfx_presets.js"></script>
+<script src="retro_audio.js"></script>
+<script src="retro_engine.js"></script>
+<script src="camera_ui.js"></script>
+<script>
+(function () {
+  const p = new URLSearchParams(location.search);
+  if (p.get('render') === '1') document.body.classList.add('render');
+  const load = (src) => new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('Could not load ' + src));
+    document.head.appendChild(s);
+  });
+  const fail = (e) => {
+    document.getElementById('err').textContent = String(e && e.stack || e);
+    window.__simError = String(e && e.message || e);
+    console.error(e);
+  };
+  window.addEventListener('error', (e) => fail(e.error || e.message));
+  (async () => {
+    try {
+      if (p.get('sfx')) await load(p.get('sfx')).catch(e => console.warn('[sfx] ' + e.message));
+      if (p.get('theme')) await load(p.get('theme'));
+      if (p.get('timeline')) await load(p.get('timeline')).catch(e => console.warn('[timeline] ' + e.message + ' — using default beats'));
+      if (p.get('sim')) await load(p.get('sim'));
+      Retro.boot();
+    } catch (e) { fail(e); }
+  })();
+})();
+</script>
+</body>
+</html>
