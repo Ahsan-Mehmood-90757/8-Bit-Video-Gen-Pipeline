@@ -444,10 +444,160 @@ def compressor(x: np.ndarray, sr: int = SAMPLE_RATE, threshold: float = -18.0, k
     return (x * gs[:, None]).astype(np.float32)
 
 
+# ------------------------------------------------------------------ continuous music bed (speed-coupled)
+MUSIC_DEFAULTS = {"enabled": True, "bpm": 112, "level": 0.55, "duck": 0.45, "progression": ["C2", "A1", "G1", "D2"],
+                  "warmth_hz": 600.0, "fade_in": 0.25, "fade_out": 1.0}
+NOTE_HZ = {"C": 261.63, "D": 293.66, "E": 329.63, "G": 392.00, "A": 440.00}
+FIFTH = {"C": "G", "D": "A", "E": "B", "G": "D", "A": "E"}
+
+
+def note_hz(name: str) -> float:
+    pc, octv = name[:-1].upper(), int(name[-1])
+    return NOTE_HZ[pc] * 2.0 ** (octv - 4)
+
+
+def tempo_factor(scale: float) -> float:
+    """Groove tempo follows simulation speed, but stays musical: x0.15 slow-mo -> 0.575x tempo."""
+    return float(np.clip(0.5 + 0.5 * scale, 0.5, 1.25))
+
+
+def pitch_factor(scale: float) -> float:
+    """Tape-style drop: up to -7 semitones as the simulation approaches a standstill (x0.15 -> ~ -6 st)."""
+    return float(2.0 ** (-(1.0 - min(1.0, scale)) * 7.0 / 12.0))
+
+
+def stretch_factor(scale: float) -> float:
+    """Impact envelopes stretch in slow-mo (x0.15 -> 2x longer decay/release) instead of cutting to silence."""
+    return 1.0 / (0.4 + 0.6 * min(1.0, scale)) if scale < 1.0 else 1.0
+
+
+def scale_per_frame(rows: list, n_frames: int) -> tuple[np.ndarray, np.ndarray]:
+    sc = np.ones(n_frames); st = np.zeros(n_frames)
+    for f, v, step in rows or []:
+        if 0 <= f < n_frames:
+            sc[f] = v; st[f] = step
+    return sc, st
+
+
+def stretch_layers(layers: list, k: float) -> list:
+    if abs(k - 1.0) < 1e-3:
+        return layers
+    out = []
+    for L in layers:
+        L = dict(L)
+        for key in ("dur", "d", "r"):
+            if key in L:
+                L[key] = float(L[key]) * k
+        if L.get("wave") == "noise":                         # noise stays a short impact (<= 0.1 s)
+            L["dur"] = min(L["dur"], 0.1 - min(L.get("r", 0.015), 0.04))
+            L["r"] = min(L.get("r", 0.015), 0.04)
+        out.append(L)
+    return out
+
+
+def music_bed(cfg: dict, ts_rows: list, n: int, sr: int = SAMPLE_RATE, fps: int = FPS) -> tuple[np.ndarray, dict]:
+    """Bass + soft kick + offbeat hat + pulse stab on an 8th-note grid whose clock integrates tempo_factor(timeScale);
+    every note is pitched by pitch_factor() at its onset and its envelope stretched by 1/tempo factor."""
+    cfg = {**MUSIC_DEFAULTS, **(cfg or {})}
+    out = np.zeros((n, 2), dtype=np.float32)
+    n_frames = int(math.ceil(n / sr * fps)) + 2
+    scale, _ = scale_per_frame(ts_rows, n_frames)
+    tf = np.array([tempo_factor(v) for v in scale])
+    beats_per_frame = tf * cfg["bpm"] / 60.0 / fps
+    cum = np.concatenate([[0.0], np.cumsum(beats_per_frame)])          # beats elapsed at each frame boundary
+    ft = np.arange(len(cum)) / fps
+    t = np.arange(n) / sr
+    tau = np.interp(t, ft, cum)                                        # musical time (beats) per sample
+    total_steps = int(tau[-1] * 2) + 1
+    prog = cfg["progression"]
+    pattern = [0, 0, 12, 0, 7, 0, 12, 7]                               # 8ths: root root 8va root 5th root 8va 5th
+    lv = VOICE_GAIN * float(cfg["level"])
+    inst = {
+        "bass": [{"wave": "triangle", "freq": 1, "dur": 0.10, "a": 0.01, "d": 0.16, "s": 0.35, "r": 0.06, "vol": 1.0},
+                 {"wave": "square", "duty": 0.25, "freq": 1, "dur": 0.05, "a": 0.01, "d": 0.08, "s": 0.0, "r": 0.03, "vol": 0.22}],
+        "kick": [{"wave": "triangle", "freq": 110, "freqEnd": 45, "dur": 0.05, "a": 0.008, "d": 0.12, "s": 0.0, "r": 0.03, "vol": 1.0}],
+        "hat": [{"wave": "noise", "freq": 9000, "freqEnd": 7000, "dur": 0.012, "a": 0.008, "d": 0.02, "s": 0.0, "r": 0.015, "vol": 0.5}],
+        "stab": [{"wave": "square", "duty": 0.25, "freq": 1, "dur": 0.04, "a": 0.01, "d": 0.12, "s": 0.0, "r": 0.05, "vol": 0.5},
+                 {"wave": "square", "duty": 0.25, "freq": 1, "dur": 0.04, "a": 0.01, "d": 0.12, "s": 0.0, "r": 0.05, "vol": 0.4}],
+    }
+    gains = {"bass": 0.95, "kick": 0.6, "hat": 0.28, "stab": 0.32}
+    pans = {"bass": 0.0, "kick": 0.0, "hat": 0.3, "stab": -0.25}
+    cache, notes = {}, 0
+    for k in range(total_steps):
+        onset = int(np.searchsorted(tau, k * 0.5))
+        if onset >= n:
+            break
+        fr = min(n_frames - 1, int(onset / sr * fps))
+        pf, tfac = pitch_factor(scale[fr]), tf[fr]
+        stretch = 1.0 / tfac
+        bar, step = (k // 8) % len(prog), k % 8
+        root = prog[bar]
+        hits = [("bass", note_hz(root) * 2 ** (pattern[step] / 12))]
+        if step in (0, 4):
+            hits.append(("kick", None))
+        if step % 2 == 1:
+            hits.append(("hat", None))
+        if step in (2, 6):
+            hits.append(("stab", (note_hz(root[:-1] + "4"), note_hz(FIFTH[root[0]] + "4") if FIFTH[root[0]] != "B" else note_hz(root[:-1] + "4") * 1.5)))
+        for kind, hz in hits:
+            key = (kind, round(hz if isinstance(hz, float) else (hz[0] if hz else 0), 2), round(pf, 3), round(stretch, 3))
+            if key not in cache:
+                layers = [dict(L) for L in inst[kind]]
+                if kind == "bass":
+                    for L in layers:
+                        L["freq"] = L["freqEnd"] = hz * (2 if L["wave"] == "square" else 1)
+                elif kind == "stab":
+                    layers[0]["freq"] = layers[0]["freqEnd"] = hz[0]
+                    layers[1]["freq"] = layers[1]["freqEnd"] = hz[1]
+                for L in layers:
+                    if L["wave"] != "noise":
+                        L["freq"] = min(MAX_HZ, L["freq"] * pf)
+                        L["freqEnd"] = min(MAX_HZ, L.get("freqEnd", L["freq"] / pf) * pf)
+                cache[key] = synth_sound_v3([hygiene(L) for L in stretch_layers(layers, stretch)], sr)
+            snd = cache[key]
+            end = min(n, onset + len(snd))
+            seg = snd[: end - onset] * lv * gains[kind]
+            ang = (pans[kind] + 1) * np.pi / 4
+            out[onset:end, 0] += seg * np.cos(ang) * np.sqrt(2)
+            out[onset:end, 1] += seg * np.sin(ang) * np.sqrt(2)
+            notes += 1
+    # warmth: one-pole low-pass on the whole bed (FFT-applied impulse response)
+    a = 1 - math.exp(-2 * math.pi * float(cfg["warmth_hz"]) / sr)
+    ir = a * (1 - a) ** np.arange(4096)
+    nfft = 1 << (n + len(ir) - 2).bit_length()
+    H = np.fft.rfft(ir, nfft)
+    for ch in range(2):
+        out[:, ch] = np.fft.irfft(np.fft.rfft(out[:, ch], nfft) * H, nfft)[:n]
+    fi, fo = int(cfg["fade_in"] * sr), int(cfg["fade_out"] * sr)
+    if fi:
+        out[:fi] *= np.linspace(0, 1, fi)[:, None]
+    if fo and n > fo:
+        out[-fo:] *= np.linspace(1, 0, fo)[:, None]
+    slow = float((scale[: int(n / sr * fps)] < 0.97).mean()) if n else 0.0
+    return out, {"music_notes": notes, "bpm": cfg["bpm"], "slowmo_share": round(slow, 3)}
+
+
+def duck_gain(sidechain: np.ndarray, depth: float, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Per-sample gain for the music bed: ~-5 dB under major hits, almost nothing under small ticks."""
+    B = 48
+    nb = int(math.ceil(len(sidechain) / B))
+    pad = np.zeros((nb * B,), dtype=np.float32)
+    pad[: len(sidechain)] = np.abs(sidechain).max(axis=1)
+    lvl = pad.reshape(nb, B).max(axis=1)
+    ca, cr = math.exp(-B / (0.005 * sr)), math.exp(-B / (0.22 * sr))
+    env = np.empty(nb); cur = 0.0
+    for i in range(nb):
+        cur = lvl[i] + (cur - lvl[i]) * (ca if lvl[i] > cur else cr)
+        env[i] = cur
+    d = np.clip((env - 0.08) / 0.08, 0, 1)
+    g = 1 - depth * d
+    return np.interp(np.arange(len(sidechain)), np.arange(nb) * B + B / 2, g).astype(np.float32)
+
+
 # ------------------------------------------------------------------ main entry
 def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict | None = None,
                   channel_dir: Path | None = None, sr: int = SAMPLE_RATE, mix: dict | None = None,
-                  audio: dict | None = None, episode_presets: dict | None = None) -> dict:
+                  audio: dict | None = None, episode_presets: dict | None = None, music: dict | None = None) -> dict:
     fps = int(log_data.get("fps", FPS))
     mix = {"sfx": 1.0, "pulses": 0.8, "groove": 0.45, "synth": 1.0, **(mix or {})}
     audio = audio or {}
@@ -458,10 +608,14 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
     n = int(math.ceil(duration * sr))
     cache, unknown = {}, set()
 
-    def sound(kind, semis):
-        key = (kind, round(float(semis), 3))
+    n_frames_total = int(math.ceil(duration * fps)) + 2
+    scale_f, _ = scale_per_frame(log_data.get("timescale", []), n_frames_total)
+
+    def sound(kind, semis, frame=0):
+        stretch = stretch_factor(float(scale_f[min(int(frame), n_frames_total - 1)]))   # slow-mo: longer decays
+        key = (kind, round(float(semis), 3), round(stretch, 2))
         if key not in cache:
-            cache[key] = synth_sound_v3(musicalize(presets[kind], float(semis), musical), sr)
+            cache[key] = synth_sound_v3([hygiene(L) for L in stretch_layers(musicalize(presets[kind], float(semis), musical), stretch)], sr)
         return cache[key]
 
     start_of = lambda frame: int(round(int(frame) / fps * sr))  # noqa: E731  frame-locked placement
@@ -469,7 +623,7 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
     for ev in log_data.get("events", []):
         if ev["type"] not in presets:
             unknown.add(ev["type"]); continue
-        sfx_voices.append((start_of(ev["frame"]), sound(ev["type"], ev.get("pitch", 0)), float(ev.get("vol", 1)) * mix["sfx"], float(ev.get("pan", 0)), ev["type"]))
+        sfx_voices.append((start_of(ev["frame"]), sound(ev["type"], ev.get("pitch", 0), ev["frame"]), float(ev.get("vol", 1)) * mix["sfx"], float(ev.get("pan", 0)), ev["type"]))
     pulses = list(log_data.get("pulses", [])) + groove_pulses(groove, duration, fps)
     rhythm_voices, n_groove = [], 0
     for p in pulses:
@@ -477,7 +631,7 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
             unknown.add(p["kind"]); continue
         g = (0.35 + 0.65 * float(p.get("accent", 0.7))) * (mix["groove"] if p.get("groove") else mix["pulses"])
         n_groove += bool(p.get("groove"))
-        rhythm_voices.append((start_of(p["frame"]), sound(p["kind"], p.get("semis", 0)), g, float(p.get("pan", 0)), p["kind"]))
+        rhythm_voices.append((start_of(p["frame"]), sound(p["kind"], p.get("semis", 0), p["frame"]), g, float(p.get("pan", 0)), p["kind"]))
 
     activity, stats = [], {"dropped": 0}
     bus = (place_voices(sfx_voices, n, cap, sr=sr, activity=activity, stats=stats)
@@ -488,6 +642,12 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
         edges = np.diff(np.concatenate([[0], nzc.astype(np.int8), [0]]))
         activity += list(zip(np.nonzero(edges == 1)[0].tolist(), np.nonzero(edges == -1)[0].tolist()))
     bus += cont
+    # SFX stem (everything except the music bed) — used for the crackle / gap noise-floor check
+    stem = bus.copy()
+    music_info = {"music_notes": 0}
+    if music is not None and music.get("enabled", True):
+        bed, music_info = music_bed(music, log_data.get("timescale", []), n, sr, fps)
+        bus += bed * duck_gain(stem, float({**MUSIC_DEFAULTS, **music}["duck"]), sr)[:, None]
     # master chain: lowpass 2 kHz Q0.8 -> compressor -> master 0.75 -> safety limiter
     bus = biquad_lowpass(bus, audio.get("lowpassHz", LOWPASS_HZ), audio.get("lowpassQ", LOWPASS_Q), sr)
     bus = compressor(bus, sr, **{**COMP, **(audio.get("comp") or {})})
@@ -497,13 +657,15 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
     if n > 2 * fade:
         bus[:fade] *= np.linspace(0, 1, fade)[:, None]; bus[-fade:] *= np.linspace(1, 0, fade)[:, None]
     write_wav(out_path, bus, sr)
+    sp = float(np.max(np.abs(stem))) if stem.size else 0.0
+    write_wav(out_path.with_name(out_path.stem + "_sfxstem.wav"), stem * (0.89 / sp if sp > 0 else 1.0), sr)   # peak-normalized stem
     write_json_safe(out_path.with_suffix(".activity.json"),
                     {"sr": sr, "intervals": sorted([[int(a), int(b)] for a, b in activity]), "dropped_triggers": stats["dropped"]})
     if unknown:
         log(f"unknown sound types skipped (add to engine_v3/sfx_presets_v3.js or the channel sfx file): {sorted(unknown)}", "warn")
     peak = float(np.max(np.abs(bus))) if bus.size else 0.0
     max_note = max((L["freq"] for k in cache for L in musicalize(presets[k[0]], k[1], musical) if L.get("wave") != "noise"), default=0)
-    return {"events": len(sfx_voices), "dropped": stats["dropped"], "pulses": len(pulses) - n_groove, "groove_steps": n_groove,
+    return {**music_info, "events": len(sfx_voices), "dropped": stats["dropped"], "pulses": len(pulses) - n_groove, "groove_steps": n_groove,
             "voices": len(log_data.get("synth", {})), "peak_db": 20 * math.log10(peak) if peak > 0 else -120.0,
             "max_note_hz": round(max_note, 2)}
 

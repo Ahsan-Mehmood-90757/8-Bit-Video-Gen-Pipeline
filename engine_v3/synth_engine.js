@@ -155,6 +155,7 @@
     node.connect(bus);
     src.start(now);
     list.push({ src, g, start: now, end: now + buf.duration });
+    if (MAJOR.has(type) || (o.vol !== undefined && o.vol >= 0.95 && which === 'sfx' && type.indexOf('win') >= 0)) duckMusic();
   }
   function voice(id, o) {
     if (!live || !ctx || ctx.state !== 'running') return;
@@ -190,14 +191,89 @@
   function endFrame(frame) {
     if (!ctx) return;
     for (const id in voices) if (voices[id].last !== frame) release(id);
+    scheduleMusic();
   }
-  function silence() { if (!ctx) return; for (const id in voices) release(id); }
+  // ---- continuous music bed (preview mirror of synth_v3.music_bed): bass + kick + hat + stab, tempo/pitch follow timeScale
+  const NOTE = { C: 261.63, D: 293.66, E: 329.63, G: 392.0, A: 440.0 }, FIFTH = { C: 'G', D: 'A', G: 'D', A: 'E', E: 'B' };
+  const noteHz = (n) => NOTE[n[0]] * Math.pow(2, +n.slice(-1) - 4);
+  const MUSIC = { bpm: 112, level: 0.55, duck: 0.45, progression: ['C2', 'A1', 'G1', 'D2'], warmth_hz: 600 };
+  const PATTERN = [0, 0, 12, 0, 7, 0, 12, 7];
+  const INST = {
+    bass: [{ wave: 'triangle', dur: 0.10, a: 0.01, d: 0.16, s: 0.35, r: 0.06, vol: 1.0 }, { wave: 'square', duty: 0.25, dur: 0.05, a: 0.01, d: 0.08, s: 0, r: 0.03, vol: 0.22, oct: 2 }],
+    kick: [{ wave: 'triangle', freq: 110, freqEnd: 45, dur: 0.05, a: 0.008, d: 0.12, s: 0, r: 0.03, vol: 1.0 }],
+    hat: [{ wave: 'noise', freq: 9000, freqEnd: 7000, dur: 0.012, a: 0.008, d: 0.02, s: 0, r: 0.015, vol: 0.5 }],
+    stab: [{ wave: 'square', duty: 0.25, dur: 0.04, a: 0.01, d: 0.12, s: 0, r: 0.05, vol: 0.5 }, { wave: 'square', duty: 0.25, dur: 0.04, a: 0.01, d: 0.12, s: 0, r: 0.05, vol: 0.4, fifth: true }]
+  };
+  const GAINS = { bass: 0.95, kick: 0.6, hat: 0.28, stab: 0.32 };
+  const MAJOR = new Set(['stamp', 'explosion', 'warn', 'bin_win', 'success', 'level', 'banner', 'thud', 'powerup']);
+  let musicBus = null, mNext = null, mStep = 0, tScale = 1, mCfg = null;
+  const tempoF = (sc) => Math.min(1.25, Math.max(0.5, 0.5 + 0.5 * sc));
+  const pitchF = (sc) => Math.pow(2, -(1 - Math.min(1, sc)) * 7 / 12);
+  function ensureMusic() {
+    if (musicBus || !ctx) return;
+    const T = window.EPISODE_TIMELINE && window.EPISODE_TIMELINE.music;
+    if (!T || T.enabled === false) return;
+    mCfg = Object.assign({}, MUSIC, T);
+    const warm = ctx.createBiquadFilter(); warm.type = 'lowpass'; warm.frequency.value = mCfg.warmth_hz;
+    musicBus = ctx.createGain(); musicBus.gain.value = 1;
+    musicBus.connect(warm); warm.connect(bus);
+  }
+  function musicNote(kind, hz, hz2, pf, stretch, when) {
+    const key = [kind, hz && hz.toFixed(2), pf.toFixed(3), stretch.toFixed(2)].join('|');
+    let buf = cache.get('m:' + key);
+    if (!buf) {
+      const layers = INST[kind].map((L0) => {
+        const L = Object.assign({}, L0);
+        if (kind === 'bass') { L.freq = L.freqEnd = hz * (L.oct || 1); }
+        if (kind === 'stab') { L.freq = L.freqEnd = L.fifth ? hz2 : hz; }
+        if (L.wave !== 'noise') { L.freq = Math.min(CFG.maxHz, L.freq * pf); L.freqEnd = Math.min(CFG.maxHz, (L.freqEnd || L.freq) * pf); }
+        for (const k of ['dur', 'd', 'r']) if (L.wave !== 'noise') L[k] *= stretch;
+        return hygiene(L);
+      });
+      const parts = layers.map(L => synthLayer(L, ctx.sampleRate)), n = Math.max(...parts.map(p => p.length)), data = new Float32Array(n);
+      for (const p of parts) for (let i = 0; i < p.length; i++) data[i] += p[i];
+      buf = ctx.createBuffer(1, n, ctx.sampleRate); buf.copyToChannel(data, 0); cache.set('m:' + key, buf);
+    }
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const g = ctx.createGain(); g.gain.value = CFG.voiceGain * mCfg.level * GAINS[kind];
+    src.connect(g); g.connect(musicBus); src.start(when);
+  }
+  function scheduleMusic() {
+    if (!live || !ctx || ctx.state !== 'running') return;
+    ensureMusic();
+    if (!musicBus) return;
+    const now = ctx.currentTime;
+    if (mNext === null || mNext < now - 0.25) mNext = now + 0.05;
+    while (mNext < now + 0.12) {
+      const tf = tempoF(tScale), pf = pitchF(tScale), prog = mCfg.progression;
+      const root = prog[Math.floor(mStep / 8) % prog.length], st = mStep % 8;
+      musicNote('bass', noteHz(root) * Math.pow(2, PATTERN[st] / 12), 0, pf, 1 / tf, mNext);
+      if (st === 0 || st === 4) musicNote('kick', 0, 0, pf, 1 / tf, mNext);
+      if (st % 2 === 1) musicNote('hat', 0, 0, 1, 1, mNext);
+      if (st === 2 || st === 6) { const r4 = noteHz(root[0] + '4'); musicNote('stab', r4, FIFTH[root[0]] === 'B' ? r4 * 1.5 : noteHz(FIFTH[root[0]] + '4'), pf, 1 / tf, mNext); }
+      mNext += (60 / mCfg.bpm / 2) / tf; mStep++;
+    }
+  }
+  function duckMusic() {
+    if (!musicBus) return;
+    const t = ctx.currentTime, d = 1 - mCfg.duck;
+    musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t);
+    musicBus.gain.linearRampToValueAtTime(d, t + 0.005); musicBus.gain.setTargetAtTime(1, t + 0.06, 0.08);
+  }
+  function setTimeScale(sc) { tScale = +sc || 1; }
+
+  function silence() {
+    if (!ctx) return;
+    for (const id in voices) release(id);
+    mNext = null; mStep = 0;
+    if (musicBus) { musicBus.gain.cancelScheduledValues(ctx.currentTime); musicBus.gain.setValueAtTime(0, ctx.currentTime); musicBus.disconnect(); musicBus = null; }
+  }
 
   window.SynthEngineV3 = {
     CFG, PENTA, quantize, musicalize, hygiene, synthLayer,
     unlock() { const c = ensure(); if (c && c.state !== 'running') c.resume(); live = true; },
     setLive(on) { live = !!on; if (!on) silence(); },
-    play, voice, endFrame, silence
+    play, voice, endFrame, silence, setTimeScale
   };
 
   // hook into the engine's preview controls (RetroAudio is still the engine-facing object)
