@@ -6,7 +6,7 @@
  *   (threshold -18, knee 12, ratio 12, attack 0.003, release 0.15) -> masterGain 0.75 -> destination
  *
  * Polyphony: strict 3 one-shot voices per bus (sfx bus, rhythm bus); when a 4th triggers, the oldest
- * fades out in 15 ms, so rapid loops never stack volume.
+ * fades out in 15 ms. The same sound cannot re-trigger within 75 ms, so rapid loops never stack volume.
  *
  * Musical mode: every pitched layer is snapped to C major pentatonic
  *   [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25] (+ octaves), folded down to <= 880 Hz,
@@ -17,7 +17,7 @@
   const CFG = {
     voiceGain: 0.16, lowpassHz: 2000, lowpassQ: 0.8,
     comp: { threshold: -18, knee: 12, ratio: 12, attack: 0.003, release: 0.15 },
-    masterGain: 0.75, polyphony: 3, stealFade: 0.015, maxHz: 880, musical: true
+    masterGain: 0.75, polyphony: 3, stealFade: 0.015, maxHz: 880, musical: true, minSpacing: 0.075
   };
   const PENTA = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25];
   const NOTES = [];
@@ -32,7 +32,21 @@
   }
   function quantize(f) { let q = snap(f); while (q > CFG.maxHz + 1e-6) q /= 2; return +q.toFixed(4); }
   // Convert preset layers + semitone pitch into musical layers (pitch baked in). Mirrors synth_v3.musicalize().
-  function musicalize(layers, pitch) {
+  // Click/crackle-free envelopes for EVERY layer (mirrors synth_v3.hygiene):
+  //   attack 8-15 ms from 0.0001, release >= 15 ms exponential down to 0.0001 then true 0,
+  //   noise only as a single short impact (dur + release <= 0.1 s).
+  function hygiene(L) {
+    L.a = Math.min(0.015, Math.max(0.008, L.a || 0));
+    L.r = Math.max(0.015, L.r || 0);
+    if (L.wave === 'noise') {
+      L.r = Math.min(L.r, 0.04);
+      L.dur = Math.max(0.01, Math.min(L.dur || 0.05, 0.1 - L.r));
+    }
+    L.expRelease = true;
+    return L;
+  }
+  function musicalize(layers, pitch) { return musicalizeRaw(layers, pitch).map(hygiene); }
+  function musicalizeRaw(layers, pitch) {
     const k = Math.pow(2, (pitch || 0) / 12);
     return layers.map((L0) => {
       const L = Object.assign({}, L0);
@@ -57,7 +71,7 @@
   function makeLfsr() { let r = 1; return () => { const fb = (r & 1) ^ ((r >> 1) & 1); r = (r >> 1) | (fb << 14); return (r & 1) ? -1 : 1; }; }
   function levelAt(L, t) {
     const a = L.a || 0, d = L.d || 0, s = L.s === undefined ? 1 : L.s;
-    if (t < a) return a > 0 ? t / a : 1;
+    if (t < a) return a > 0 ? 0.0001 + (1 - 0.0001) * t / a : 1;
     if (t < a + d) return d > 0 ? 1 - (1 - s) * (t - a) / d : s;
     return s;
   }
@@ -70,7 +84,10 @@
     let ph = 0, last = -1, nv = 1;
     for (let i = 0; i < n; i++) {
       const tt = i / sr - delay; if (tt < 0) continue;
-      const env = tt < dur ? levelAt(L, tt) : (r > 0 ? rel * Math.max(0, 1 - (tt - dur) / r) : 0);
+      let env;
+      if (tt < dur) env = levelAt(L, tt);
+      else if (r > 0 && tt - dur < r && rel > 0.0001) env = L.expRelease ? rel * Math.pow(0.0001 / rel, (tt - dur) / r) : rel * (1 - (tt - dur) / r);
+      else env = 0;                                                  // true digital silence after the release
       let f = f0 * Math.pow(f1 / f0, Math.min(tt / dur, 1));
       if (arp) f *= Math.pow(2, arp[Math.min(Math.floor(tt / arpStep), arp.length - 1)] / 12);
       if (vib) f *= 1 + vib[1] * Math.sin(2 * Math.PI * vib[0] * tt);
@@ -92,7 +109,7 @@
 
   // ---- Web Audio graph
   let ctx = null, bus = null, live = true;
-  const cache = new Map(), active = { sfx: [], rhythm: [] }, voices = {};
+  const cache = new Map(), active = { sfx: [], rhythm: [] }, voices = {}, lastStart = {};
   const presets = () => Object.assign({}, window.SFX_PRESETS || {}, window.CHANNEL_SFX_PRESETS || {},
     (window.EPISODE_TIMELINE && window.EPISODE_TIMELINE.sfx_presets) || {});   // engine < channel < episode
   function ensure() {
@@ -122,6 +139,8 @@
       buf = ctx.createBuffer(1, n, ctx.sampleRate); buf.copyToChannel(data, 0); cache.set(key, buf);
     }
     const now = ctx.currentTime, list = active[which];
+    if (now - (lastStart[type] || -1) < CFG.minSpacing) return;            // same sound can't re-trigger within 75 ms
+    lastStart[type] = now;
     for (let i = list.length - 1; i >= 0; i--) if (list[i].end <= now) list.splice(i, 1);
     while (list.length >= CFG.polyphony) {                       // steal the oldest voice
       const old = list.shift();
@@ -139,30 +158,43 @@
   }
   function voice(id, o) {
     if (!live || !ctx || ctx.state !== 'running') return;
+    const t = ctx.currentTime, target = Math.max(0.0001, CFG.voiceGain * Math.min(1, o.gain || 0));
     let V = voices[id];
     if (!V) {
+      if (!(o.gain > 0)) return;
       const osc = ctx.createOscillator();
       osc.type = o.wave === 'triangle' ? 'triangle' : o.wave === 'sine' ? 'sine' : o.wave === 'saw' ? 'sawtooth' : 'square';
       const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 20000;
-      const g = ctx.createGain(); g.gain.value = 0;
-      osc.connect(f); f.connect(g); g.connect(bus); osc.start();
+      const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(target, t + 0.012);                  // 12 ms attack from 0.0001
+      osc.connect(f); f.connect(g); g.connect(bus); osc.start(t);
       V = voices[id] = { osc, f, g, last: -1 };
+    } else {
+      V.g.gain.cancelScheduledValues(t); V.g.gain.setValueAtTime(Math.max(0.0001, V.g.gain.value), t);
+      V.g.gain.exponentialRampToValueAtTime(target, t + 0.012);
     }
-    const t = ctx.currentTime;
     V.osc.frequency.setTargetAtTime(Math.max(1, Math.min(CFG.maxHz, o.freq || 110)), t, 0.01);
     V.f.frequency.setTargetAtTime(o.cutoff > 0 ? o.cutoff : 20000, t, 0.01);
     V.f.Q.setTargetAtTime(0.7 + (o.res || 0) * 10, t, 0.02);
-    V.g.gain.setTargetAtTime(CFG.voiceGain * Math.min(1, o.gain || 0), t, 0.015);
     V.last = o.frame;
+  }
+  function release(id) {
+    const V = voices[id]; if (!V) return;
+    const t = ctx.currentTime;
+    V.g.gain.cancelScheduledValues(t); V.g.gain.setValueAtTime(Math.max(0.0001, V.g.gain.value), t);
+    V.g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);                // 30 ms release to 0.0001
+    V.g.gain.setValueAtTime(0, t + 0.031);                                    // then true zero
+    try { V.osc.stop(t + 0.04); } catch (e) { /* already stopped */ }        // oscillator does not keep running
+    delete voices[id];
   }
   function endFrame(frame) {
     if (!ctx) return;
-    for (const id in voices) if (voices[id].last !== frame) voices[id].g.gain.setTargetAtTime(0, ctx.currentTime, 0.02);
+    for (const id in voices) if (voices[id].last !== frame) release(id);
   }
-  function silence() { if (!ctx) return; for (const id in voices) voices[id].g.gain.value = 0; }
+  function silence() { if (!ctx) return; for (const id in voices) release(id); }
 
   window.SynthEngineV3 = {
-    CFG, PENTA, quantize, musicalize, synthLayer,
+    CFG, PENTA, quantize, musicalize, hygiene, synthLayer,
     unlock() { const c = ensure(); if (c && c.state !== 'running') c.resume(); live = true; },
     setLive(on) { live = !!on; if (!on) silence(); },
     play, voice, endFrame, silence

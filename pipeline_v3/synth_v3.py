@@ -31,7 +31,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "pipeline"))
 from common import SAMPLE_RATE, _read_js_json, load_sfx_presets, log, read_json, write_wav  # noqa: E402  (v2 helpers, read-only)
-from synth_sfx import synth_sound  # noqa: E402  (same oscillator/ADSR as the browser preview)
+from synth_sfx import synth_sound  # noqa: E402,F401  (v2 oscillator; v3 uses synth_sound_v3 with clean envelopes)
+from common import write_json as write_json_safe  # noqa: E402
 
 FPS = 60
 ENGINE_V3 = ROOT / "engine_v3"
@@ -229,7 +230,94 @@ def quantize(f: float) -> float:
     return round(q, 4)
 
 
+MIN_SPACING = 0.075   # seconds between re-triggers of the same sound
+
+
+def hygiene(L: dict) -> dict:
+    """Click/crackle-free envelope for every layer (mirrors synth_engine.js hygiene()):
+    attack 8-15 ms from 0.0001, release >= 15 ms exponential to 0.0001 then true 0,
+    noise only as one short impact (dur + release <= 0.1 s)."""
+    L["a"] = min(0.015, max(0.008, float(L.get("a", 0) or 0)))
+    L["r"] = max(0.015, float(L.get("r", 0) or 0))
+    if L.get("wave") == "noise":
+        L["r"] = min(L["r"], 0.04)
+        L["dur"] = max(0.01, min(float(L.get("dur", 0.05)), 0.1 - L["r"]))
+    L["expRelease"] = True
+    return L
+
+
+def synth_layer_v3(L: dict, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Same oscillators as v2/preview, with the v3 envelope: attack from 0.0001, exponential release to 0.0001."""
+    delay, dur, r = float(L.get("delay", 0.0)), max(float(L.get("dur", 0.05)), 1e-4), float(L.get("r", 0.0))
+    a, d, s_ = float(L.get("a", 0.0)), float(L.get("d", 0.0)), float(L.get("s", 1.0))
+    n = math.ceil((delay + dur + r) * sr) + 2
+    out = np.zeros(n, dtype=np.float64)
+    tt_all = np.arange(n) / sr - delay
+    valid = tt_all >= 0
+    tt = tt_all[valid]
+
+    def level(t):
+        lv = np.full_like(t, s_)
+        if a > 0:
+            m = t < a
+            lv[m] = 0.0001 + (1 - 0.0001) * t[m] / a
+        if d > 0:
+            m = (t >= a) & (t < a + d)
+            lv[m] = 1 - (1 - s_) * (t[m] - a) / d
+        return lv
+
+    rel = float(level(np.array([dur]))[0])
+    env = level(np.minimum(tt, dur))
+    rel_t = tt - dur
+    if r > 0 and rel > 0.0001:
+        rel_env = rel * np.power(0.0001 / rel, np.clip(rel_t / r, 0, 1))
+        env = np.where(tt < dur, env, np.where(rel_t < r, rel_env, 0.0))
+    else:
+        env = np.where(tt < dur, env, 0.0)
+    f0 = float(L.get("freq", 440.0)); f1 = float(L.get("freqEnd", f0))
+    f = f0 * np.power(f1 / f0, np.clip(tt / dur, 0, 1))
+    if L.get("arp"):
+        step = float(L.get("arpStep", 0.06))
+        f = f * np.power(2.0, np.asarray(L["arp"], dtype=np.float64)[np.minimum(np.floor(tt / step).astype(int), len(L["arp"]) - 1)] / 12.0)
+    if L.get("vib"):
+        f = f * (1 + L["vib"][1] * np.sin(2 * np.pi * L["vib"][0] * tt))
+    f = np.minimum(f, sr * 0.45)
+    phase = np.cumsum(f / sr)
+    frac = phase - np.floor(phase)
+    w = L.get("wave", "square")
+    if w == "triangle":
+        v = 1 - 4 * np.abs(frac - 0.5)
+    elif w == "saw":
+        v = 2 * frac - 1
+    elif w == "sine":
+        v = np.sin(2 * np.pi * phase)
+    elif w == "noise":
+        from synth_sfx import _lfsr_table
+        k = np.floor(phase).astype(int)
+        v = _lfsr_table(int(k.max()) + 1)[k].astype(np.float64)
+    else:
+        v = np.where(frac < float(L.get("duty", 0.5)), 1.0, -1.0)
+    v = v * env * float(L.get("vol", 0.5))
+    if int(L.get("crush", 0) or 0):
+        lv = 2 ** (int(L["crush"]) - 1)
+        v = np.round(v * lv) / lv
+    out[valid] = v
+    return out.astype(np.float32)
+
+
+def synth_sound_v3(layers: list, sr: int = SAMPLE_RATE) -> np.ndarray:
+    parts = [synth_layer_v3(L, sr) for L in layers]
+    out = np.zeros(max(len(p) for p in parts), dtype=np.float32)
+    for p in parts:
+        out[: len(p)] += p
+    return out
+
+
 def musicalize(layers: list, pitch: float, musical: bool = True) -> list:
+    return [hygiene(L) for L in musicalize_raw(layers, pitch, musical)]
+
+
+def musicalize_raw(layers: list, pitch: float, musical: bool = True) -> list:
     """Bake the semitone pitch into the layers, snap to pentatonic, warm the waveform. Mirrors synth_engine.js."""
     k = 2 ** (float(pitch or 0) / 12)
     out = []
@@ -260,11 +348,23 @@ def musicalize(layers: list, pitch: float, musical: bool = True) -> list:
     return out
 
 
-def place_voices(voices: list, n: int, cap: int = POLYPHONY, fade: float = STEAL_FADE, sr: int = SAMPLE_RATE) -> np.ndarray:
-    """voices: [(start_sample, mono_snd, gain, pan)]. Strict polyphony: when a voice starts while `cap` are
-    sounding, the OLDEST is faded to silence over `fade` seconds (same as the preview)."""
+def place_voices(voices: list, n: int, cap: int = POLYPHONY, fade: float = STEAL_FADE, sr: int = SAMPLE_RATE,
+                 spacing: float = MIN_SPACING, activity: list | None = None, stats: dict | None = None) -> np.ndarray:
+    """voices: [(start_sample, mono_snd, gain, pan, sound_name)]. A sound re-triggered within `spacing` of its
+    previous trigger is dropped (so rapid loops never stack); strict polyphony per bus: when a voice starts while
+    `cap` are sounding, the OLDEST fades out over `fade` seconds."""
     bus = np.zeros((n, 2), dtype=np.float32)
     voices = sorted(voices, key=lambda v: v[0])
+    kept, last = [], {}
+    for v in voices:
+        key = v[4] if len(v) > 4 else "_"
+        if v[0] - last.get(key, -10 ** 12) < spacing * sr:
+            if stats is not None:
+                stats["dropped"] = stats.get("dropped", 0) + 1
+            continue
+        kept.append(v[:4])
+        last[key] = v[0]
+    voices = kept
     ends = [v[0] + len(v[1]) for v in voices]
     cut = [None] * len(voices)
     active: list[int] = []
@@ -287,6 +387,10 @@ def place_voices(voices: list, n: int, cap: int = POLYPHONY, fade: float = STEAL
                 seg[keep:] *= np.linspace(1, 0, len(seg) - keep, dtype=np.float32)
         end = min(n, st + len(seg))
         seg = seg[: end - st] * min(VOICE_GAIN, VOICE_GAIN * g)
+        if activity is not None:
+            nz = np.nonzero(np.abs(seg) > 1e-7)[0]
+            if len(nz):
+                activity.append((st + int(nz[0]), st + int(nz[-1]) + 1))
         ang = (float(np.clip(pan, -1, 1)) + 1) * np.pi / 4
         bus[st:end, 0] += seg * np.cos(ang) * np.sqrt(2)
         bus[st:end, 1] += seg * np.sin(ang) * np.sqrt(2)
@@ -358,7 +462,7 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
     def sound(kind, semis):
         key = (kind, round(float(semis), 3))
         if key not in cache:
-            cache[key] = synth_sound(musicalize(presets[kind], float(semis), musical), 0.0, sr)
+            cache[key] = synth_sound_v3(musicalize(presets[kind], float(semis), musical), sr)
         return cache[key]
 
     start_of = lambda frame: int(round(int(frame) / fps * sr))  # noqa: E731  frame-locked placement
@@ -366,7 +470,7 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
     for ev in log_data.get("events", []):
         if ev["type"] not in presets:
             unknown.add(ev["type"]); continue
-        sfx_voices.append((start_of(ev["frame"]), sound(ev["type"], ev.get("pitch", 0)), float(ev.get("vol", 1)) * mix["sfx"], float(ev.get("pan", 0))))
+        sfx_voices.append((start_of(ev["frame"]), sound(ev["type"], ev.get("pitch", 0)), float(ev.get("vol", 1)) * mix["sfx"], float(ev.get("pan", 0)), ev["type"]))
     pulses = list(log_data.get("pulses", [])) + groove_pulses(groove, duration, fps)
     rhythm_voices, n_groove = [], 0
     for p in pulses:
@@ -374,10 +478,17 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
             unknown.add(p["kind"]); continue
         g = (0.35 + 0.65 * float(p.get("accent", 0.7))) * (mix["groove"] if p.get("groove") else mix["pulses"])
         n_groove += bool(p.get("groove"))
-        rhythm_voices.append((start_of(p["frame"]), sound(p["kind"], p.get("semis", 0)), g, float(p.get("pan", 0))))
+        rhythm_voices.append((start_of(p["frame"]), sound(p["kind"], p.get("semis", 0)), g, float(p.get("pan", 0)), p["kind"]))
 
-    bus = place_voices(sfx_voices, n, cap, sr=sr) + place_voices(rhythm_voices, n, cap, sr=sr)
-    bus += synth_continuous_v3(log_data.get("synth", {}), n, sr, fps) * mix["synth"]
+    activity, stats = [], {"dropped": 0}
+    bus = (place_voices(sfx_voices, n, cap, sr=sr, activity=activity, stats=stats)
+           + place_voices(rhythm_voices, n, cap, sr=sr, activity=activity, stats=stats))
+    cont = synth_continuous_v3(log_data.get("synth", {}), n, sr, fps) * mix["synth"]
+    nzc = np.abs(cont).max(axis=1) > 1e-7
+    if nzc.any():                                            # continuous voices count as active only while sounding
+        edges = np.diff(np.concatenate([[0], nzc.astype(np.int8), [0]]))
+        activity += list(zip(np.nonzero(edges == 1)[0].tolist(), np.nonzero(edges == -1)[0].tolist()))
+    bus += cont
     # master chain: lowpass 2 kHz Q0.8 -> compressor -> master 0.75 -> safety limiter
     bus = biquad_lowpass(bus, audio.get("lowpassHz", LOWPASS_HZ), audio.get("lowpassQ", LOWPASS_Q), sr)
     bus = compressor(bus, sr, **{**COMP, **(audio.get("comp") or {})})
@@ -387,11 +498,13 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
     if n > 2 * fade:
         bus[:fade] *= np.linspace(0, 1, fade)[:, None]; bus[-fade:] *= np.linspace(1, 0, fade)[:, None]
     write_wav(out_path, bus, sr)
+    write_json_safe(out_path.with_suffix(".activity.json"),
+                    {"sr": sr, "intervals": sorted([[int(a), int(b)] for a, b in activity]), "dropped_triggers": stats["dropped"]})
     if unknown:
         log(f"unknown sound types skipped (add to engine_v3/sfx_presets_v3.js or the channel sfx file): {sorted(unknown)}", "warn")
     peak = float(np.max(np.abs(bus))) if bus.size else 0.0
     max_note = max((L["freq"] for k in cache for L in musicalize(presets[k[0]], k[1], musical) if L.get("wave") != "noise"), default=0)
-    return {"events": len(sfx_voices), "pulses": len(pulses) - n_groove, "groove_steps": n_groove,
+    return {"events": len(sfx_voices), "dropped": stats["dropped"], "pulses": len(pulses) - n_groove, "groove_steps": n_groove,
             "voices": len(log_data.get("synth", {})), "peak_db": 20 * math.log10(peak) if peak > 0 else -120.0,
             "max_note_hz": round(max_note, 2)}
 
