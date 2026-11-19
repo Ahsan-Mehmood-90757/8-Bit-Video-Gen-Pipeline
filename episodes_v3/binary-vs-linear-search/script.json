@@ -1,0 +1,31 @@
+{
+  "title": "Linear Search vs Binary Search",
+  "pipeline": "v3",
+  "duration": 32,
+  "_doc": "V3 visual-first (no TTS / voiceover / subtitles). Sorted 16-item array, target 72 (index 13). Binary search finds it in 3 probes (mid 7 -> 11 -> 13); linear search needs 14.",
+  "beats": [
+    { "id": "setup", "start": 0.0,  "end": 4.5,  "cue": "Both 2x8 grids materialize, target badge pulses", "micro": "BRUTE FORCE SCAN · DIVIDE & ELIMINATE" },
+    { "id": "hops",  "start": 4.5,  "end": 16.0, "cue": "Binary: 3 hops with LOW/MID/HIGH, halves dimmed; linear crawls 0..5", "micro": "34 < 72: DROP LEFT · 58 < 72: DROP LEFT · FOUND IN 3 STEPS!" },
+    { "id": "grind", "start": 16.0, "end": 25.0, "cue": "Binary locked on 72; linear accelerates through 6..13", "micro": "DONE: 3 OPS · FOUND: 14 OPS" },
+    { "id": "scale", "start": 25.0, "end": 32.0, "cue": "1,000,000 items card: linear 1,000,000 steps vs binary 20 max", "micro": "REQUIRES SORTED DATA" }
+  ],
+  "crt": true,
+  "audio": { "musical": true, "polyphony": 3, "lufs": -16 },
+  "mix": { "sfx": 1.0, "pulses": 0.8, "synth": 1.0 },
+  "sfx_presets": {
+    "_doc": "Episode sounds. Layer vol = target gain / 0.16 (the engine's per-voice gain cap), so lin_tick 0.09 -> 0.5625, bin_hop 0.15 -> 0.9375, bin_win 0.14 -> 0.875 per note. All pass the master LP 2 kHz + compressor.",
+    "lin_tick":  [{"wave": "triangle", "freq": 196.0, "freqEnd": 196.0, "dur": 0.004, "a": 0.001, "d": 0.03, "s": 0.0, "r": 0.004, "vol": 0.5625},
+                  {"wave": "noise", "freq": 2400, "freqEnd": 1600, "dur": 0.004, "a": 0.0005, "d": 0.004, "s": 0.0, "r": 0.002, "vol": 0.1}],
+    "bin_hop":   [{"wave": "triangle", "freq": 261.63, "freqEnd": 261.63, "dur": 0.006, "a": 0.002, "d": 0.11, "s": 0.0, "r": 0.02, "vol": 0.9375},
+                  {"wave": "triangle", "freq": 523.25, "freqEnd": 523.25, "dur": 0.004, "a": 0.002, "d": 0.06, "s": 0.0, "r": 0.01, "vol": 0.18}],
+    "bin_drop":  [{"wave": "triangle", "musical": false, "freq": 140.0, "freqEnd": 80.0, "dur": 0.24, "a": 0.03, "d": 0.18, "s": 0.25, "r": 0.08, "vol": 0.6},
+                  {"wave": "noise", "freq": 900, "freqEnd": 250, "dur": 0.22, "a": 0.05, "d": 0.16, "s": 0.0, "r": 0.05, "vol": 0.16}],
+    "bin_win":   [{"wave": "triangle", "freq": 523.25, "freqEnd": 523.25, "dur": 0.14, "delay": 0.0,  "a": 0.003, "d": 0.25, "s": 0.3, "r": 0.25, "vol": 0.875},
+                  {"wave": "triangle", "freq": 659.25, "freqEnd": 659.25, "dur": 0.14, "delay": 0.06, "a": 0.003, "d": 0.25, "s": 0.3, "r": 0.25, "vol": 0.875},
+                  {"wave": "triangle", "freq": 783.99, "freqEnd": 783.99, "dur": 0.14, "delay": 0.12, "a": 0.003, "d": 0.25, "s": 0.3, "r": 0.3, "vol": 0.875}],
+    "lin_found": [{"wave": "triangle", "freq": 329.63, "freqEnd": 329.63, "dur": 0.05, "delay": 0.0,  "a": 0.003, "d": 0.18, "s": 0.0, "r": 0.06, "vol": 0.625},
+                  {"wave": "triangle", "freq": 392.0,  "freqEnd": 392.0,  "dur": 0.05, "delay": 0.08, "a": 0.003, "d": 0.22, "s": 0.0, "r": 0.08, "vol": 0.625}],
+    "soft_swoosh": [{"wave": "noise", "freq": 600, "freqEnd": 2400, "dur": 0.3, "a": 0.12, "d": 0.12, "s": 0.2, "r": 0.1, "vol": 0.35},
+                    {"wave": "triangle", "musical": false, "freq": 110.0, "freqEnd": 82.0, "dur": 0.3, "a": 0.08, "d": 0.2, "s": 0.2, "r": 0.1, "vol": 0.4}]
+  }
+}
