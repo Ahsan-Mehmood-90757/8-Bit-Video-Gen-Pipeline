@@ -1,4 +1,10 @@
-# Retro Video Factory v2
+# Retro Video Factory v2 + v3
+
+> **Two pipelines side by side:**
+> - **v2 (narrated)** uses `engine/` and `pipeline/` with Kokoro TTS and captions.
+> - **v3 (visual-first)** uses `engine_v3/` and `pipeline_v3/`, with no voice. Micro-text and frame-locked chiptune audio carry the video. See **V3.md**.
+>
+> Both use the same channel kits in `channels/`.
 
 Deterministic retro pixel-art simulations → 1080×1920 60 fps vertical videos with frame-locked 8-bit SFX, continuous physics-coupled engine/motor tones, local TTS narration, and word-highlighted captions. It supports **multiple channels**, each with its own isolated style kit. For the multi-channel workflow, see **CHANNELS.md**.
 
