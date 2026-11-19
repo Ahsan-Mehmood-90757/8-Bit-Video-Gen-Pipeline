@@ -67,6 +67,16 @@ Optional render flags:
 - `--encoder amf` uses the AMD GPU encoder.
 - `--no-crt` turns off the scanlines.
 
+## Using GitHub Desktop instead of the command line
+
+- **New PC:** in GitHub Desktop choose *File → Clone repository → URL*.
+  1. Paste `https://github.com/Ahsan-Mehmood-90757/8-bit-video-gen-pipeline`.
+  2. Pick the local folder and click *Clone*.
+  3. Switch *Current branch* to **V3**.
+  4. Run `setup_v3.bat` in that folder.
+- **A folder that already has the files but no `.git`:** double-click `connect_existing_folder.bat` in it. Then choose *File → Add local repository* and select the folder.
+- Commit and push from the *Changes* tab. Use *Fetch origin* / *Pull* to bring in changes made on the other PC.
+
 ## Keeping two PCs in sync
 
 On the PC you worked on:
