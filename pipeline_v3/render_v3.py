@@ -10,8 +10,8 @@ No TTS, no Whisper, no .ass captions. Stages:
   C  pipeline_v3/synth_v3.py -> build/mix_v3.wav (frame-locked chiptune + foley, limiter, no ducking)
   E  4x nearest-neighbor upscale + CRT scanlines, two-pass loudnorm (-14 LUFS, -1 dBTP) -> H.264 yuv420p MP4
 
---preview-only writes <episode>/qa/qa_hook.png, qa_mid1.png, qa_mid2.png, qa_payoff.png (+ qa_sheet.png and a silent
-preview.mp4) with a faint magenta dashed UI-safe border (x 90..920, y 260..1480 on 1080x1920). Every text box, box, tag,
+--preview-only writes <episode>/qa/qa_phase1..4.png (aliases qa_hook/mid1/mid2/payoff.png), qa_sheet.png,
+audio_report.json (per-phase peak/RMS, clipped samples) and preview.mp4 (540x960 with audio) with a faint magenta dashed UI-safe border (x 90..920, y 260..1480 on 1080x1920). Every text box, box, tag,
 micro-text and R.node() is checked on every frame; if any leaves the safe box, QA FAILS (exit code 2), offenders are
 outlined in magenta and listed in qa/safe_zone_report.json. The final render never draws the border.
 
@@ -88,7 +88,8 @@ def stage_t(job: Job) -> dict:
     crt = script.get("crt", job.channel.get("crt", True))
     tl = {"version": 3, "title": script.get("title", job.ep.name), "channel": job.slug, "fps": FPS, "total": total,
           "crt": bool(crt), "bpm": (script.get("groove") or {}).get("bpm", script.get("bpm", 120)),
-          "groove": script.get("groove"), "mix": script.get("mix"), "audio": script.get("audio"), "beats": beats, "words": []}
+          "groove": script.get("groove"), "mix": script.get("mix"), "audio": script.get("audio"),
+          "sfx_presets": script.get("sfx_presets"), "beats": beats, "words": []}
     job.build.mkdir(parents=True, exist_ok=True)
     tl_json = job.build / "timeline.json"
     if not tl_json.exists() or read_json(tl_json) != tl:      # rewrite only on change, so frame caching works
@@ -192,15 +193,46 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
 
 
 # ------------------------------------------------------------------ C: audio
-def stage_c(job: Job, tl: dict, total: float):
+def stage_c(job: Job, tl: dict, total: float, work: Path | None = None):
     import synth_v3
+    work = work or job.build
     log("C  synthesizing mix_v3.wav (frame-locked chiptune + foley, no voice)", "step")
-    data = read_json(job.build / "audio_log_v3.json")
-    info = synth_v3.synthesize_v3(data, total, job.build / "mix_v3.wav", groove=tl.get("groove"),
-                                  channel_dir=job.channel_dir, mix=tl.get("mix"), audio=tl.get("audio"))
+    data = read_json(work / "audio_log_v3.json")
+    info = synth_v3.synthesize_v3(data, total, work / "mix_v3.wav", groove=tl.get("groove"),
+                                  channel_dir=job.channel_dir, mix=tl.get("mix"), audio=tl.get("audio"),
+                                  episode_presets=tl.get("sfx_presets"))
     log(f"mix_v3.wav: {info['events']} hits, {info['pulses']} pulses, {info['groove_steps']} groove steps, "
         f"{info['voices']} voices, highest note {info['max_note_hz']} Hz, peak {info['peak_db']:.1f} dBFS", "ok")
-    master_loudness(job.build / "mix_v3.wav", target=float((tl.get("audio") or {}).get("lufs", -14.0)))
+    master_loudness(work / "mix_v3.wav", target=float((tl.get("audio") or {}).get("lufs", -14.0)))
+
+
+def audio_report(wav: Path, tl: dict, dest: Path) -> dict:
+    """Per-phase peak / RMS and clipped-sample count of the mastered mix (QA check #2)."""
+    from common import load_audio
+    x = load_audio(wav, channels=2)
+    sr = 48000
+    rows, clipped_total = [], 0
+    for b in tl["beats"]:
+        seg = x[int(b["start"] * sr): int(b["end"] * sr)]
+        if not len(seg):
+            continue
+        peak = float(np.max(np.abs(seg)))
+        rms = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2)))
+        clipped = int(np.sum(np.abs(seg) >= 0.999))
+        clipped_total += clipped
+        rows.append({"beat": b["id"], "start": b["start"], "end": b["end"],
+                     "peak_dbfs": round(20 * math.log10(max(peak, 1e-9)), 2),
+                     "rms_dbfs": round(20 * math.log10(max(rms, 1e-9)), 2), "clipped_samples": clipped})
+    rms_vals = [r["rms_dbfs"] for r in rows if r["rms_dbfs"] > -80]
+    rep = {"phases": rows, "clipped_samples": clipped_total,
+           "rms_spread_db": round(max(rms_vals) - min(rms_vals), 2) if rms_vals else None}
+    write_json(dest, rep)
+    log("audio per phase:            peak dBFS   RMS dBFS   clipped")
+    for r in rows:
+        log(f"   {r['beat']:20s}  {r['peak_dbfs']:8.1f}  {r['rms_dbfs']:9.1f}   {r['clipped_samples']}")
+    log(f"audio: {'NO clipping' if clipped_total == 0 else str(clipped_total) + ' CLIPPED samples'}, "
+        f"RMS spread across phases {rep['rms_spread_db']} dB", "ok" if clipped_total == 0 else "warn")
+    return rep
 
 
 def measure_lufs(wav: Path) -> float | None:
@@ -219,7 +251,7 @@ def master_loudness(wav: Path, target: float = -14.0):
     FFmpeg's dynamic loudnorm mode, which can pump.)"""
     import synth_v3
     from common import load_audio, write_wav
-    for _ in range(2):                                   # 2nd pass corrects the small drop caused by limiting
+    for _ in range(3):                                   # extra passes correct the small drop caused by limiting
         lufs = measure_lufs(wav)
         if lufs is None or lufs < -70:
             log("loudness measurement failed / silent mix — skipping mastering", "warn")
@@ -337,7 +369,7 @@ def qa_times(tl: dict, total: float) -> list[tuple[str, float]]:
         mid1, mid2 = total * 0.35, total * 0.65
     payoff = max(at(beats[-1], 0.5), total - 0.9)
     clamp = lambda t: max(0.0, min(t, total - 1 / FPS))  # noqa: E731
-    return [("qa_hook.png", clamp(hook)), ("qa_mid1.png", clamp(mid1)), ("qa_mid2.png", clamp(mid2)), ("qa_payoff.png", clamp(payoff))]
+    return [("qa_phase1.png", clamp(hook)), ("qa_phase2.png", clamp(mid1)), ("qa_phase3.png", clamp(mid2)), ("qa_phase4.png", clamp(payoff))]
 
 
 def preview_only(job: Job, tl: dict):
@@ -350,6 +382,8 @@ def preview_only(job: Job, tl: dict):
     shots = qa_times(tl, total)
     for j, t in enumerate(float(x) for x in (job.args.qa_times or "").split(",") if x.strip()):
         shots.append((f"qa_extra{j + 1}.png", min(t, total - 1 / FPS)))
+    for old in qa.glob("qa_*.png"):
+        old.unlink()
     for name, t in shots:
         run([which_ffmpeg(), "-y", "-v", "error", "-i", "frames_lowres.mkv", "-ss", f"{t:.3f}", "-frames:v", "1",
              "-vf", f"scale={OUT_W}:{OUT_H}:flags=neighbor", str(qa / name)], cwd=work)
@@ -360,9 +394,15 @@ def preview_only(job: Job, tl: dict):
         cmd += ["-i", str(p)]
     fc = "".join(f"[{i}:v]scale=360:640:flags=area[s{i}];" for i in range(4)) + "[s0][s1][s2][s3]hstack=inputs=4"
     run(cmd + ["-filter_complex", fc, str(qa / "qa_sheet.png")])
-    run([which_ffmpeg(), "-y", "-v", "error", "-i", "frames_lowres.mkv", "-filter_complex", video_chain(False, (540, 960)),
-         "-map", "[vout]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", str(qa / "preview.mp4")], cwd=work)
-    log(f"QA ready: {qa}  (qa_hook / qa_mid1 / qa_mid2 / qa_payoff .png, qa_sheet.png, silent preview.mp4)", "ok")
+    for src, alias in (("qa_phase1.png", "qa_hook.png"), ("qa_phase2.png", "qa_mid1.png"), ("qa_phase3.png", "qa_mid2.png"), ("qa_phase4.png", "qa_payoff.png")):
+        shutil.copy2(qa / src, qa / alias)          # blueprint names kept as aliases
+    # QA audio: synthesize + master the preview mix, report per-phase levels, mux into preview.mp4
+    stage_c(job, tl, total, work)
+    audio_report(work / "mix_v3.wav", tl, qa / "audio_report.json")
+    run([which_ffmpeg(), "-y", "-v", "error", "-i", "frames_lowres.mkv", "-i", "mix_v3.wav", "-filter_complex", video_chain(False, (540, 960)),
+         "-map", "[vout]", "-map", "1:a", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "160k",
+         "-shortest", str(qa / "preview.mp4")], cwd=work)
+    log(f"QA ready: {qa}  (qa_phase1..4.png, qa_sheet.png, audio_report.json, preview.mp4 with audio)", "ok")
     bad = safe_zone_check(work, qa / "safe_zone_report.json")
     if bad:
         log("QA FAILED — fix the elements above (magenta outlines in the QA PNGs), e.g. with "
@@ -409,6 +449,7 @@ def main():
         log("safe-zone violations found in the full render (see above) — run --preview-only to inspect", "warn")
     if "C" in args.steps.upper():
         stage_c(job, tl, total)
+        audio_report(job.build / "mix_v3.wav", tl, job.build / "audio_report.json")
     if "E" in args.steps.upper():
         out = stage_e(job, tl, total)
         log(f"DONE in {time.time() - t0:.1f}s -> {out}", "ok")

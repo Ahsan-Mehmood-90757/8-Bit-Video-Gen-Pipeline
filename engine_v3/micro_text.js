@@ -49,6 +49,37 @@
   };
   R.beatNum = (div = 1) => Math.max(-1, Math.floor((R.t - R.tempo.start) / (R.tempo.spb / div) + 1e-9));
 
+  // ================================================================== Compact digits (3x5 font)
+  // For dense numeric grids: at scale 2 a digit is 6x10 low-res px (24x40 on 1080x1920) with a 2 px gap,
+  // so two-digit values fit in narrow cells with clear separation. Supports 0-9 . , - % : < > = and space.
+  const D35 = {
+    '0': [7, 5, 5, 5, 7], '1': [2, 6, 2, 2, 7], '2': [7, 1, 7, 4, 7], '3': [7, 1, 7, 1, 7], '4': [5, 5, 7, 1, 1],
+    '5': [7, 4, 7, 1, 7], '6': [7, 4, 7, 5, 7], '7': [7, 1, 2, 2, 2], '8': [7, 5, 7, 5, 7], '9': [7, 5, 7, 1, 7],
+    '.': [0, 0, 0, 0, 2], ',': [0, 0, 0, 2, 4], '-': [0, 0, 7, 0, 0], '%': [5, 1, 2, 4, 5], ':': [0, 2, 0, 2, 0],
+    '<': [1, 2, 4, 2, 1], '>': [4, 2, 1, 2, 4], '=': [0, 7, 0, 7, 0], ' ': [0, 0, 0, 0, 0]
+  };
+  R.digitsWidth = (str, scale = 2) => { const n = String(str).length; return n ? (n * 4 - 1) * scale : 0; };
+  R.digits = function (str, x, y, o = {}) {
+    const s = o.scale || 2, txt = String(str), w = R.digitsWidth(txt, s), ctx = I.ctx;
+    let p = R.inWorld() ? R.toScreen(x, y) : { x, y };
+    let bx = p.x; if (o.align === 'center') bx = p.x - w / 2; else if (o.align === 'right') bx = p.x - w;
+    bx = rnd(bx); const by = rnd(p.y);
+    if (R.inWorld() && !R.inView(bx, by, w, 5 * s)) return w;           // never draw cut-off digits
+    const pass = (c, dx, dy) => {
+      ctx.fillStyle = c;
+      let cx = bx + dx;
+      for (const ch of txt) {
+        const g = D35[ch] || D35[' '];
+        for (let r = 0; r < 5; r++) for (let col = 0; col < 3; col++) if ((g[r] >> (2 - col)) & 1) ctx.fillRect(cx + col * s, by + dy + r * s, s, s);
+        cx += 4 * s;
+      }
+    };
+    if (o.shadow) pass(o.shadow === true ? PAL.black : o.shadow, 1, 1);
+    pass(o.color || PAL.white, 0, 0);
+    if (R.trackUI) R.trackUI({ x: bx, y: by, w, h: 5 * s }, 'text', txt);
+    return w;
+  };
+
   // ================================================================== Impact micro-text
   const queue = [];
   // micro-text also avoids every R.reserve() rect (banner, stamp, HUD panels) — mirror them here

@@ -239,7 +239,7 @@ def musicalize(layers: list, pitch: float, musical: bool = True) -> list:
         f1 = float(L.get("freqEnd", L.get("freq", 440))) * k
         if L.get("wave") == "noise":
             L["freq"], L["freqEnd"] = f0, f1
-        elif not musical:
+        elif not musical or L.get("musical") is False:      # exact pitch requested (still capped at 880 Hz)
             L["freq"], L["freqEnd"] = min(f0, MAX_HZ), min(f1, MAX_HZ)
         else:
             q0 = snap(f0)
@@ -344,13 +344,14 @@ def compressor(x: np.ndarray, sr: int = SAMPLE_RATE, threshold: float = -18.0, k
 # ------------------------------------------------------------------ main entry
 def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict | None = None,
                   channel_dir: Path | None = None, sr: int = SAMPLE_RATE, mix: dict | None = None,
-                  audio: dict | None = None) -> dict:
+                  audio: dict | None = None, episode_presets: dict | None = None) -> dict:
     fps = int(log_data.get("fps", FPS))
     mix = {"sfx": 1.0, "pulses": 0.8, "groove": 0.45, "synth": 1.0, **(mix or {})}
     audio = audio or {}
     musical = audio.get("musical", True)
     cap = int(audio.get("polyphony", POLYPHONY))
     presets = load_presets_v3(channel_dir)
+    presets.update({k: v for k, v in (episode_presets or {}).items() if not k.startswith("_")})   # engine < channel < episode
     n = int(math.ceil(duration * sr))
     cache, unknown = {}, set()
 

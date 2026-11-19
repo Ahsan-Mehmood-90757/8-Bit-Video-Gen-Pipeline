@@ -38,7 +38,7 @@
       const L = Object.assign({}, L0);
       const f0 = (L.freq || 440) * k, f1 = (L.freqEnd === undefined ? L.freq || 440 : L.freqEnd) * k;
       if (L.wave === 'noise') { L.freq = f0; L.freqEnd = f1; return L; }
-      if (!CFG.musical) { L.freq = Math.min(f0, CFG.maxHz); L.freqEnd = Math.min(f1, CFG.maxHz); return L; }
+      if (!CFG.musical || L.musical === false) { L.freq = Math.min(f0, CFG.maxHz); L.freqEnd = Math.min(f1, CFG.maxHz); return L; }
       let q0 = snap(f0), q1 = Math.abs(f1 - f0) < 1e-6 ? q0 : snap(f1);
       const arpHz = (L.arp || []).map(a => snap(q0 * Math.pow(2, a / 12)));
       const top = Math.max(q0, q1, ...arpHz);
@@ -93,7 +93,8 @@
   // ---- Web Audio graph
   let ctx = null, bus = null, live = true;
   const cache = new Map(), active = { sfx: [], rhythm: [] }, voices = {};
-  const presets = () => Object.assign({}, window.SFX_PRESETS || {}, window.CHANNEL_SFX_PRESETS || {});
+  const presets = () => Object.assign({}, window.SFX_PRESETS || {}, window.CHANNEL_SFX_PRESETS || {},
+    (window.EPISODE_TIMELINE && window.EPISODE_TIMELINE.sfx_presets) || {});   // engine < channel < episode
   function ensure() {
     if (ctx) return ctx;
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
