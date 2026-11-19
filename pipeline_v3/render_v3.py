@@ -15,7 +15,8 @@ No TTS, no Whisper, no .ass captions. Stages:
 --preview-only writes <episode>/qa/: qa_phase1..4.png (aliases qa_hook/mid1/mid2/payoff.png), qa_sheet.png,
 preview.mp4 (540x960 with audio), audio_report.json and safe_zone_report.json. QA FAILS (exit code 2) if any text
 box, box, tag, micro-text or R.node() leaves the UI-safe box (x 90..920, y 260..1480 on 1080x1920), if any text has
-more than 4 words, or if bright text sits unchanged for more than 5 s. Offenders are outlined in magenta on the QA
+more than 4 words, if bright text sits unchanged for more than 5 s, or if the pacing analyser finds dead air
+(> 1.2 s without a visual micro-event) or an empty void (> 1.2 s with < 8% of the safe box showing content). Offenders are outlined in magenta on the QA
 images; the faint magenta safe-zone border appears only in QA renders.
 
 Episodes may live in episodes_v3/ or inside a channel (channels/<slug>/episodes/<ep>) — then that channel's
@@ -92,7 +93,9 @@ def stage_t(job: Job) -> dict:
     tl = {"version": 3, "title": script.get("title", job.ep.name), "channel": job.slug, "fps": FPS, "total": total,
           "crt": bool(crt), "bpm": (script.get("groove") or {}).get("bpm", script.get("bpm", 120)),
           "groove": script.get("groove"), "mix": script.get("mix"), "audio": script.get("audio"),
-          "sfx_presets": script.get("sfx_presets"), "text_rules": script.get("text_rules"), "beats": beats, "words": []}
+          "sfx_presets": script.get("sfx_presets"), "text_rules": script.get("text_rules"), "music": (None if script.get("music") is False or (isinstance(script.get("music"), dict) and script["music"].get("enabled") is False)
+                    else (script.get("music") or {})),
+          "beats": beats, "words": []}
     job.build.mkdir(parents=True, exist_ok=True)
     tl_json = job.build / "timeline.json"
     if not tl_json.exists() or read_json(tl_json) != tl:      # rewrite only on change, so frame caching works
@@ -103,6 +106,71 @@ def stage_t(job: Job) -> dict:
     if not 25 <= total <= 45:
         log(f"v3 videos work best at 28–38 s (this one is {total:.1f}s)", "warn")
     return tl
+
+
+# ------------------------------------------------------------------ pacing analyser (anti-dead-air rule)
+class Pacing:
+    """Per-frame visual activity inside the UI-safe box (low-res x 23..230, y 65..370):
+       changed = pixels that changed vs the previous frame (a micro-event: step, burst, tick, pop ...)
+       content = share of pixels that are not one of the frame's two dominant colours (background + grid)
+    Dead air = > MAX_S seconds with fewer than MIN_CHANGED changed pixels per frame.
+    Void     = > MAX_S seconds with less than MIN_CONTENT of the safe box showing anything."""
+    MAX_S, MIN_CHANGED, MIN_CONTENT = 1.2, 40, 0.08
+
+    def __init__(self):
+        self.prev = None
+        self.changed: list[int] = []
+        self.content: list[float] = []
+
+    def add(self, raw: bytes, k: int):
+        fr = np.frombuffer(raw, dtype=np.uint8).reshape(k, LOW_H, LOW_W, 4)[:, 65:370, 23:230, :3]
+        for f in fr:
+            f16 = f.astype(np.int16)
+            self.changed.append(0 if self.prev is None else int((np.abs(f16 - self.prev).max(axis=-1) > 10).sum()))
+            self.prev = f16
+            sub = f[::2, ::2].reshape(-1, 3).astype(np.uint32)
+            packed = (sub[:, 0] << 16) | (sub[:, 1] << 8) | sub[:, 2]
+            _, counts = np.unique(packed, return_counts=True)
+            top2 = np.sort(counts)[-2:].sum()
+            self.content.append(float(1 - top2 / len(packed)))
+
+    @staticmethod
+    def _runs(mask: list[bool], min_len: int) -> list[tuple[int, int]]:
+        runs, start = [], None
+        for i, m in enumerate(mask + [False]):
+            if m and start is None:
+                start = i
+            elif not m and start is not None:
+                if i - start > min_len:
+                    runs.append((start, i))
+                start = None
+        return runs
+
+    def report(self) -> dict:
+        lim = int(self.MAX_S * FPS)
+        dead = self._runs([c < self.MIN_CHANGED for c in self.changed[1:]], lim)
+        void = self._runs([c < self.MIN_CONTENT for c in self.content], lim)
+        sec = lambda a, b: {"start": round(a / FPS, 2), "end": round(b / FPS, 2), "seconds": round((b - a) / FPS, 2)}  # noqa: E731
+        return {"rule": f"no more than {self.MAX_S}s without a visual micro-event or with an empty safe box",
+                "dead_air": [sec(a + 1, b + 1) for a, b in dead], "voids": [sec(a, b) for a, b in void],
+                "mean_changed_px": round(float(np.mean(self.changed)) if self.changed else 0, 1),
+                "mean_content": round(float(np.mean(self.content)) if self.content else 0, 3)}
+
+
+def pacing_check(work: Path, dest: Path | None = None) -> list:
+    rp = work / "pacing_report.json"
+    if not rp.exists():
+        return []
+    rep = read_json(rp)
+    if dest:
+        write_json(dest, rep)
+    bad = [("dead air", d) for d in rep["dead_air"]] + [("empty void", d) for d in rep["voids"]]
+    if not bad:
+        log(f"pacing OK — no dead air or empty voids > 1.2 s (avg {rep['mean_changed_px']} changed px/frame, "
+            f"{100 * rep['mean_content']:.0f}% of the safe box has content)", "ok")
+    for kind, d in bad:
+        log(f"   {kind}: {d['start']:.2f}s - {d['end']:.2f}s ({d['seconds']:.2f}s) — add a micro-event or tighten the timing", "warn")
+    return bad
 
 
 # ------------------------------------------------------------------ B: frames
@@ -144,7 +212,7 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
     total = min(float(tl["total"]), args.max_seconds or 1e9)
     n_frames = int(math.ceil(total * FPS))
     deps = [job.ep / "simulation.js", job.build / "timeline.json"] + job.kit_files() + job.engine_files()
-    if not args.force and not args.max_seconds and not qa and not is_stale([frames_out, log_out, work / "safe_zone_report.json"], deps):
+    if not args.force and not args.max_seconds and not qa and not is_stale([frames_out, log_out, work / "safe_zone_report.json", work / "pacing_report.json"], deps):
         if read_json(log_out).get("total_frames") == n_frames:
             log("B  frames up to date (cached)", "step")
             return n_frames, total
@@ -153,6 +221,7 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
                             "-r", str(FPS), "-i", "-", "-c:v", "libx264rgb", "-preset", "ultrafast", "-qp", "0",
                             "-pix_fmt", "rgb24", str(frames_out)], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     errors: list[str] = []
+    pacing = Pacing()
     t0 = time.time()
     with sync_playwright() as pw:
         browser = launch_browser(pw, args.browser_path)
@@ -172,7 +241,9 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
             b64 = page.evaluate("n => window.renderBatch(n)", k)
             if errors:
                 enc.kill(); sys.exit(f"Simulation error at frame ~{done}: {errors[0]}")
-            enc.stdin.write(base64.b64decode(b64))
+            raw = base64.b64decode(b64)
+            enc.stdin.write(raw)
+            pacing.add(raw, k)
             done += k
             pct = done * 100 // n_frames
             if pct // 10 != last // 10:
@@ -190,6 +261,7 @@ def stage_b(job: Job, tl: dict, work: Path, qa: bool = False) -> tuple[int, floa
     write_json(log_out, audio)
     if safety is not None:
         write_json(work / "safe_zone_report.json", safety)
+    write_json(work / "pacing_report.json", pacing.report())
     log(f"frames done in {time.time() - t0:.1f}s · {len(audio['events'])} hits, {len(audio['pulses'])} pulses, "
         f"{len(audio['synth'])} continuous voices", "ok")
     return n_frames, total
@@ -203,9 +275,11 @@ def stage_c(job: Job, tl: dict, total: float, work: Path | None = None):
     data = read_json(work / "audio_log_v3.json")
     info = synth_v3.synthesize_v3(data, total, work / "mix_v3.wav", groove=tl.get("groove"),
                                   channel_dir=job.channel_dir, mix=tl.get("mix"), audio=tl.get("audio"),
-                                  episode_presets=tl.get("sfx_presets"))
+                                  episode_presets=tl.get("sfx_presets"), music=tl.get("music"))
     log(f"mix_v3.wav: {info['events']} hits, {info['pulses']} pulses, {info['groove_steps']} groove steps, "
-        f"{info['voices']} voices, highest note {info['max_note_hz']} Hz, peak {info['peak_db']:.1f} dBFS", "ok")
+        f"{info['voices']} voices, highest note {info['max_note_hz']} Hz, peak {info['peak_db']:.1f} dBFS"
+        + (f", music bed {info['music_notes']} notes @ {info.get('bpm')} bpm (slow-mo {100 * info.get('slowmo_share', 0):.0f}% of the time)"
+           if info.get("music_notes") else ", no music bed"), "ok")
     master_loudness(work / "mix_v3.wav", target=float((tl.get("audio") or {}).get("lufs", -14.0)))
 
 
@@ -253,20 +327,27 @@ def audio_report(wav: Path, tl: dict, dest: Path, mp4: Path | None = None) -> di
     rms_vals = [r["rms_dbfs"] for r in rows if r["rms_dbfs"] > -80]
     rep = {"phases": rows, "clipped_samples": clipped_total,
            "rms_spread_db": round(max(rms_vals) - min(rms_vals), 2) if rms_vals else None}
-    rep["wav_gaps"] = gap_floor(x, wav.with_suffix(".activity.json"))
-    if mp4 is not None and mp4.exists():
-        rep["mp4_gaps"] = gap_floor(load_audio(mp4, channels=2), wav.with_suffix(".activity.json"))
+    stem = wav.with_name(wav.stem + "_sfxstem.wav")
+    music_on = tl.get("music") is not None
+    if music_on and stem.exists():
+        # with a music bed there are no silent gaps by design: check the SFX stem for crackle/hiss between hits
+        rep["sfx_stem_gaps"] = gap_floor(load_audio(stem, channels=2), wav.with_suffix(".activity.json"))
+        rep["music_bed"] = True
+    else:
+        rep["wav_gaps"] = gap_floor(x, wav.with_suffix(".activity.json"))
+        if mp4 is not None and mp4.exists():
+            rep["mp4_gaps"] = gap_floor(load_audio(mp4, channels=2), wav.with_suffix(".activity.json"))
     write_json(dest, rep)
     log("audio per phase:            peak dBFS   RMS dBFS   clipped")
     for r in rows:
         log(f"   {r['beat']:20s}  {r['peak_dbfs']:8.1f}  {r['rms_dbfs']:9.1f}   {r['clipped_samples']}")
     log(f"audio: {'NO clipping' if clipped_total == 0 else str(clipped_total) + ' CLIPPED samples'}, "
         f"RMS spread across phases {rep['rms_spread_db']} dB", "ok" if clipped_total == 0 else "warn")
-    for k in ("wav_gaps", "mp4_gaps"):
+    for k in ("wav_gaps", "mp4_gaps", "sfx_stem_gaps"):
         g = rep.get(k)
         if g and g.get("gap_floor_dbfs") is not None:
             ok = g["gap_floor_dbfs"] <= -60
-            log(f"{k[:-5].upper()} silent gaps: noise floor {g['gap_floor_dbfs']} dBFS over {g['gap_seconds']} s of gaps "
+            log(f"{k[:-5].upper().replace('_', ' ')} silent gaps: noise floor {g['gap_floor_dbfs']} dBFS over {g['gap_seconds']} s of gaps "
                 f"({'OK <= -60 dBFS' if ok else 'TOO NOISY'}), {g.get('dropped_triggers', 0)} triggers dropped by 75 ms spacing",
                 "ok" if ok else "warn")
     return rep
@@ -428,6 +509,7 @@ def preview_only(job: Job, tl: dict):
          "-shortest", str(qa / "preview.mp4")], cwd=work)
     log(f"QA ready: {qa}  (qa_phase1..4.png, qa_sheet.png, audio_report.json, preview.mp4 with audio)", "ok")
     bad = safe_zone_check(work, qa / "safe_zone_report.json")
+    bad = bad + pacing_check(work, qa / "pacing_report.json")
     if bad:
         log("QA FAILED — fix the elements above (magenta outlines in the QA PNGs), e.g. with "
             "Camera.track({fit:[x,y,w,h]}) / fitBoundsToSafeZone(), then re-run --preview-only.", "warn")
@@ -469,8 +551,8 @@ def main():
     total = min(float(tl["total"]), args.max_seconds or 1e9)
     if "B" in args.steps.upper():
         _, total = stage_b(job, tl, job.build)
-    if "B" in args.steps.upper() and safe_zone_check(job.build):
-        log("safe-zone violations found in the full render (see above) — run --preview-only to inspect", "warn")
+    if "B" in args.steps.upper() and (safe_zone_check(job.build) + pacing_check(job.build)):
+        log("layout / pacing violations found in the full render (see above) — run --preview-only to inspect", "warn")
     if "C" in args.steps.upper():
         stage_c(job, tl, total)
         audio_report(job.build / "mix_v3.wav", tl, job.build / "audio_report.json")
