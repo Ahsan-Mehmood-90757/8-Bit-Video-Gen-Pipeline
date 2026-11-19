@@ -22,16 +22,20 @@ Retro.defineSim({
     S.dequeueT = 1.0;
     S.stampT = S.B.pay.start + 3.2;
     const b = S.B;
-    // world is clipped to the upper safe zone; the HUD strip below it stays clean
-    Camera.setView(R.SAFE.x, R.SAFE.y, R.SAFE.w, 300);
+    // world is clipped to the upper part of the UI-safe box; HUD strip below it
+    Camera.setView(R.SAFE.x, R.SAFE.y, R.SAFE.w, 255);
+    // ring + slot labels + pointers occupy roughly this world box; fit:[] lets the engine pick the
+    // largest zoom that keeps it inside the safe zone (fitBoundsToSafeZone)
+    const RING_BOX = [RING.cx - 100, RING.cy - 100, 200, 200];
+    const FOCUS_6701 = [40, 145, 168, 105];          // slots [6,7,0,1] incl. labels + HEAD pointer
     Camera.track([
-      { t: 0, x: 135, y: 180, zoom: 1 },                                   // hook: ring sits low, strip on top
-      { t: b.loop.start + 0.1, x: 135, y: 180, zoom: 1 },
-      { t: b.loop.start + 1.0, x: 124, y: 206, zoom: 1.7 },                 // zoom into slots [6,7,0,1]
-      { t: b.full.start, x: 124, y: 206, zoom: 1.7 },
-      { t: b.full.start + 0.8, x: 135, y: 236, zoom: 1.05 },                // whole ring to show it filling
-      { t: b.pay.start, x: 135, y: 236, zoom: 1.05 },
-      { t: b.pay.start + 0.8, x: 135, y: 186, zoom: 0.95 }                  // ring low, payoff stamp on top
+      { t: 0, x: 135, y: 181, zoom: 0.8 },                                 // hook: ring low, queue strip on top
+      { t: b.loop.start + 0.1, x: 135, y: 181, zoom: 0.8 },
+      { t: b.loop.start + 1.0, fit: FOCUS_6701, zoom: 1.7 },                // zoom into [6,7,0,1], clamped to safe zone
+      { t: b.full.start, fit: FOCUS_6701, zoom: 1.7 },
+      { t: b.full.start + 0.8, fit: RING_BOX },                             // whole ring while it fills
+      { t: b.pay.start, fit: RING_BOX },
+      { t: b.pay.start + 0.8, x: 135, y: 160, zoom: 0.7 }                   // ring low, payoff stamp on top
     ]);
   },
 
@@ -118,7 +122,9 @@ Retro.defineSim({
       // packets in flight
       for (const f of S.flyers) {
         const k = R.clamp((t - f.t0) / f.dur, 0, 1), p = slotPos(f.slot);
-        const from = f.kind === 'in' ? { x: 20, y: RING.cy - 110 } : p, to = f.kind === 'in' ? p : { x: 250, y: RING.cy - 110 };
+        // producer enters / consumer exits at the edges of the CURRENT camera view (always inside the safe zone)
+        const V = Camera.view, edgeL = R.toWorld(V.x + 12, V.y + 34), edgeR = R.toWorld(V.x + V.w - 12, V.y + 34);
+        const from = f.kind === 'in' ? edgeL : p, to = f.kind === 'in' ? p : edgeR;
         const e = R.ease.inOut(k), x = R.lerp(from.x, to.x, e), y = R.lerp(from.y, to.y, e) - Math.sin(Math.PI * k) * 14;
         R.box(x - 7, y - 6, 14, 12, { fill: f.kind === 'in' ? P.gold : P.emerald, border: P.black });
         R.text(f.v, x, y - 3, { color: P.bg, align: 'center', shadow: false });
@@ -128,7 +134,7 @@ Retro.defineSim({
 
       // ---- micro-text anchored to world positions
       const tailP = slotPos(0);
-      R.micro('WRAP MOD 8', tailP.x, tailP.y - 9, { t0: S.dequeueT + 0.05, dur: 2.2, style: 'badge', color: P.cyan });
+      R.micro('WRAP MOD 8', tailP.x, tailP.y - 9, { t0: S.dequeueT + 0.05, dur: 2.2, style: 'badge', color: P.cyan, at: [48, -12] });
       R.micro('ZERO SHIFTING', RING.cx, RING.cy, { t0: 2.0, dur: 1.4, style: 'ok', at: [0, 96], pointer: false, size: 2 });
       for (const wt of S.wraps) if (wt >= b.loop.start) R.micro('MODULO WRAP', slotPos(0).x, slotPos(0).y - 9, { t0: wt, dur: 1.3, style: 'badge' });
       if (S.fullT > 0) {
@@ -138,8 +144,9 @@ Retro.defineSim({
     });
 
     // ---- formulas & HUD (screen space)
-    R.formula('HEAD=(HEAD+1)%8', R.W / 2, SAFE.y + SAFE.h - 40, { t0: b.loop.start + 2.0, dur: b.full.start - b.loop.start - 2.2, at: [0, 0] });
-    if (S.fullT > 0) R.formula('HEAD == TAIL ?', R.W / 2, SAFE.y + SAFE.h - 40, { t0: S.fullT + 0.6, dur: b.pay.start - S.fullT - 0.6, at: [0, 0] });
+    const SCX = SAFE.x + SAFE.w / 2, FY = SAFE.y + 255 + 8;
+    R.formula('HEAD=(HEAD+1)%8', SCX, FY, { t0: b.loop.start + 2.0, dur: b.full.start - b.loop.start - 2.2, at: [0, 0] });
+    if (S.fullT > 0) R.formula('HEAD == TAIL ?', SCX, FY, { t0: S.fullT + 0.6, dur: b.pay.start - S.fullT - 0.6, at: [0, 0] });
     if (t >= b.loop.start + 1.0) {
       const rows = t < b.pay.start
         ? [{ label: 'COUNT', value: S.count + ' / 8', color: S.count === 8 ? P.coral : P.emerald }, { label: 'SHIFT_COST', value: 0, color: P.cyan }]
@@ -162,9 +169,9 @@ function pointer(R, ang, r0, r1, color, label) {
 }
 
 function drawLinearStrip(R, S) {
-  const P = R.PAL, t = R.t, x0 = 31, y = 112, step = 26, dt = t - S.dequeueT;
+  const P = R.PAL, t = R.t, step = 25, x0 = Math.round(R.SAFE.x + (R.SAFE.w - (8 * step - 4)) / 2), y = 124, dt = t - S.dequeueT;
   R.tag('LINEAR QUEUE', x0, y - 14, P.coral, { textColor: P.white });
-  for (let i = 0; i < 8; i++) R.box(x0 + i * step, y, 22, 18, { fill: P.panel2, border: P.dim });
+  for (let i = 0; i < 8; i++) R.box(x0 + i * step, y, 21, 18, { fill: P.panel2, border: P.dim });
   const items = 'ABCDEFG'.split('');
   let shifts = 0;
   items.forEach((v, i) => {
@@ -175,9 +182,9 @@ function drawLinearStrip(R, S) {
       if (k > 0) shifts++;
       x -= step * R.ease.inOut(k);
     }
-    R.box(x, yy, 22, 18, { fill: P.coralDk, border: P.coral });
-    R.text(v, x + 11, yy + 6, { color: P.white, align: 'center', shadow: false });
+    R.box(x, yy, 21, 18, { fill: P.coralDk, border: P.coral });
+    R.text(v, x + 10, yy + 6, { color: P.white, align: 'center', shadow: false });
   });
   R.text('SHIFTS: ' + shifts, x0 + 8 * step - 4, y + 24, { color: shifts ? P.coral : P.mid, align: 'right' });
-  if (dt > 0.95) R.micro('SHIFT ×6', x0 + 3 * step, y + 18, { t0: S.dequeueT + 0.95, dur: 2.3, style: 'warn', at: [0, 22] });
+  if (dt > 0.95) R.micro('SHIFT ×6', x0 + 3 * step, y + 18, { t0: S.dequeueT + 0.95, dur: 2.3, style: 'warn', at: [-34, 20] });
 }

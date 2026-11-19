@@ -4,6 +4,9 @@
  * R.onBeat(div) / R.pulse(kind) / R.synth(voice,{freq,cutoff,res,...}) + everything from v2
  * (Camera, R.world, R.peel, R.force, R.flow, R.label, R.telemetry, R.gauge, R.scope, R.gear ...).
  * Colors: R.PAL roles only, so the channel theme controls the look.
+ * Safe zone: everything must stay inside R.SAFE (1080x1920 px 90..920 x 260..1480). --preview-only FAILS QA otherwise.
+ *   Use Camera.track({fit:[x,y,w,h]}) / Camera.fitTo() / fitBoundsToSafeZone(); world text/boxes cut by the view
+ *   edge are auto-hidden. Audio: notes are auto-snapped to C major pentatonic <= 880 Hz, 3-voice cap per bus.
  */
 Retro.defineSim({
   defaultBeats: [{ id: 'hook', dur: 4 }, { id: 'core', dur: 12 }, { id: 'failure', dur: 10 }, { id: 'payoff', dur: 8 }],
@@ -12,16 +15,19 @@ Retro.defineSim({
     const S = R.state;
     S.b = { hook: R.beat('hook'), core: R.beat('core'), fail: R.beat('failure'), pay: R.beat('payoff') };
     S.angle = 0; S.steps = 0;
-    Camera.setView(R.SAFE.x, R.SAFE.y, R.SAFE.w, 300);          // world above the HUD strip
-    const b = S.b, home = { x: 135, y: 205 };
+    const b = S.b;
+    // world view = UI-safe box minus the HUD strip at the bottom (safe box is x 90..920, y 260..1480 on 1080x1920)
+    Camera.setView(R.SAFE.x, R.SAFE.y, R.SAFE.w, 255);
+    // fit:[x,y,w,h] = world box that must stay fully visible; zoom is capped by fitBoundsToSafeZone()
+    const ALL = [70, 170, 120, 70], DRIVE = [82, 176, 98, 58];
     Camera.track([
-      { t: 0, x: home.x, y: home.y, zoom: 1 },
-      { t: b.core.start + 0.2, x: home.x, y: home.y, zoom: 1 },
-      { t: b.core.start + 1.0, x: 118, y: 205, zoom: 2.0 },
-      { t: b.fail.start, x: 118, y: 205, zoom: 2.0 },
-      { t: b.fail.start + 0.8, x: home.x, y: home.y, zoom: 1.3 },
-      { t: b.pay.start, x: home.x, y: home.y, zoom: 1.3 },
-      { t: b.pay.start + 0.8, x: home.x, y: 180, zoom: 1 }
+      { t: 0, fit: ALL, zoom: 1.4 },
+      { t: b.core.start + 0.2, fit: ALL, zoom: 1.4 },
+      { t: b.core.start + 1.0, fit: DRIVE, zoom: 2.4 },                   // zoom into the drive gear
+      { t: b.fail.start, fit: DRIVE, zoom: 2.4 },
+      { t: b.fail.start + 0.8, fit: ALL, zoom: 1.6 },
+      { t: b.pay.start, fit: ALL, zoom: 1.6 },
+      { t: b.pay.start + 0.8, x: 135, y: 160, zoom: 1 }                   // mechanism low, payoff stamp on top
     ]);
   },
 
@@ -43,10 +49,12 @@ Retro.defineSim({
     R.world(() => {
       R.gear(112, 205, 26, 12, S.angle, P.cyan, { hole: 5, shadow: true });
       R.gear(157, 205, 19, 9, -S.angle * 12 / 9 + 0.2, P.gold, { hole: 4, shadow: true });
+      // declare the moving parts as active nodes -> QA fails if either is ever cut by the safe zone
+      R.node(112 - 26, 205 - 26, 52, 52, 'drive gear'); R.node(157 - 19, 205 - 19, 38, 38, 'driven gear');
       R.micro('12 TEETH', 112, 180, { t0: b.core.start + 1.2, dur: 3, style: 'badge', color: P.cyan });
       R.micro('JAMMED!', 135, 205, { t0: b.fail.start + 2, dur: 4, style: 'warn' });
     });
-    R.formula('RATIO = 12 / 9', R.W / 2, SAFE.y + SAFE.h - 40, { t0: b.core.start + 4, dur: 6, at: [0, 0] });
+    R.formula('RATIO = 12 / 9', SAFE.x + SAFE.w / 2, SAFE.y + 255 + 8, { t0: b.core.start + 4, dur: 6, at: [0, 0] });
     R.telemetry(SAFE.x, SAFE.y + SAFE.h - 28, SAFE.w, [{ label: 'STEPS', value: S.steps, color: P.cyan }, { label: 'STATE', value: t >= b.fail.start + 2 && t < b.pay.start ? 'JAM' : 'OK', color: P.gold }]);
     R.payoffStamp('PAYOFF\nLINE HERE.', { t0: b.pay.start + 3, y: SAFE.y + 70 });
   }
