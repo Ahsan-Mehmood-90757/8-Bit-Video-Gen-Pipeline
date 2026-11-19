@@ -18,6 +18,7 @@ Retro.defineSim({
     [7, 0, 1, 2, 3, 4].forEach((s, k) => { S.buf[s] = LETTERS[k]; });
     S.head = 5; S.tail = 7; S.count = 6; S.headAbs = 5; S.tailAbs = -1; S.next = 6;
     S.flyers = []; S.wraps = []; S.fullT = -1; S.lastBlocked = -1;
+    S.lastHead = S.headAbs; S.lastTail = S.tailAbs; S.headMoved = -10; S.tailMoved = -10;
     S.B = { hook: R.beat('hook'), loop: R.beat('loop'), full: R.beat('full'), pay: R.beat('payoff') };
     S.dequeueT = 1.0;
     S.stampT = S.B.pay.start + 3.2;
@@ -110,15 +111,19 @@ Retro.defineSim({
         const flash = full && Math.floor(t * 8) % 2 === 0;
         const fill = v ? (flash ? P.coral : P.cyanDk) : P.panel2, border = v ? (full ? P.coral : P.cyan) : P.dim;
         R.box(p.x - 12, p.y - 8, 24, 16, { fill, border });
-        if (v) R.text(v, p.x, p.y - 3, { color: P.white, align: 'center', shadow: false });
+        if (v) R.text(v, p.x, p.y - 3, { color: P.white, align: 'center', shadow: false, data: true });
         const lp = { x: RING.cx + Math.cos(p.a) * (RING.r + 22), y: RING.cy + Math.sin(p.a) * (RING.r + 22) };
+        R.ctx.save(); R.ctx.globalAlpha *= 0.45;                          // address labels stay dim (context, not news)
         R.text('[' + i + ']', lp.x, lp.y - 3, { color: P.mid, align: 'center', shadow: false });
+        R.ctx.restore();
       }
       // pointers: HEAD outside (gold), TAIL inside (cyan); angles tween so hops glide
       const hA = -Math.PI / 2 + R.tween('hA', S.headAbs, 0.35) * Math.PI / 4;
       const tA = -Math.PI / 2 + R.tween('tA', S.tailAbs, 0.35) * Math.PI / 4;
-      pointer(R, hA, RING.r + 36, RING.r + 13, P.gold, 'HEAD');
-      pointer(R, tA, RING.r - 34, RING.r - 13, P.cyan, 'TAIL');
+      if (S.headAbs !== S.lastHead) { S.lastHead = S.headAbs; S.headMoved = t; }
+      if (S.tailAbs !== S.lastTail) { S.lastTail = S.tailAbs; S.tailMoved = t; }
+      pointer(R, hA, RING.r + 36, RING.r + 13, P.gold, 'HEAD', t - S.headMoved);
+      pointer(R, tA, RING.r - 34, RING.r - 13, P.cyan, 'TAIL', t - S.tailMoved);
       // packets in flight
       for (const f of S.flyers) {
         const k = R.clamp((t - f.t0) / f.dur, 0, 1), p = slotPos(f.slot);
@@ -129,8 +134,7 @@ Retro.defineSim({
         R.box(x - 7, y - 6, 14, 12, { fill: f.kind === 'in' ? P.gold : P.emerald, border: P.black });
         R.text(f.v, x, y - 3, { color: P.bg, align: 'center', shadow: false });
       }
-      R.text('RING BUFFER', RING.cx, RING.cy - 8, { color: P.text, align: 'center' });
-      R.text(S.count + '/8', RING.cx, RING.cy + 3, { color: S.count === 8 ? P.coral : P.emerald, align: 'center', scale: 1 });
+      R.text(S.count + '/8', RING.cx, RING.cy - 3, { color: S.count === 8 ? P.coral : P.emerald, align: 'center', scale: 1, data: true });
 
       // ---- micro-text anchored to world positions
       const tailP = slotPos(0);
@@ -139,7 +143,7 @@ Retro.defineSim({
       for (const wt of S.wraps) if (wt >= b.loop.start) R.micro('MODULO WRAP', slotPos(0).x, slotPos(0).y - 9, { t0: wt, dur: 1.3, style: 'badge' });
       if (S.fullT > 0) {
         const hp = slotPos(S.head);
-        R.micro('FULL! OVERWRITE RISK', hp.x, hp.y - 9, { t0: S.fullT, dur: b.pay.start - S.fullT, style: 'warn', priority: 2 });
+        R.micro('FULL! OVERWRITE RISK', hp.x, hp.y - 9, { t0: S.fullT, dur: b.pay.start - S.fullT, style: 'warn', priority: 2, dimAfter: 1.6 });
       }
     });
 
@@ -151,14 +155,17 @@ Retro.defineSim({
       const rows = t < b.pay.start
         ? [{ label: 'COUNT', value: S.count + ' / 8', color: S.count === 8 ? P.coral : P.emerald }, { label: 'SHIFT_COST', value: 0, color: P.cyan }]
         : [{ label: 'SHIFT_COST', value: 0, color: P.emerald }, { label: 'STEP', value: 'O(1)', color: P.gold }, { label: 'RAM', value: '8 SLOTS FIXED', color: P.cyan }];
+      R.ctx.save(); R.ctx.globalAlpha = 0.45;                            // HUD stays dim; the action is in the ring
       R.telemetry(SAFE.x, SAFE.y + SAFE.h - 6 - rows.length * 10 - 6, SAFE.w, rows);
+      R.ctx.restore();
       R.reserve(SAFE.x, SAFE.y + SAFE.h - 6 - rows.length * 10 - 6, SAFE.w, rows.length * 10 + 6);
     }
     R.payoffStamp('FIXED RAM.\nO(1) FLOW.', { t0: S.stampT, color: P.emerald, y: SAFE.y + 70 });
   }
 });
 
-function pointer(R, ang, r0, r1, color, label) {
+function pointer(R, ang, r0, r1, color, label, sinceMove = 0) {
+  const ctx = R.ctx; ctx.save(); ctx.globalAlpha *= sinceMove < 0.6 ? 1 : 0.45;     // tag pops bright on a hop, then dims
   const x0 = RING.cx + Math.cos(ang) * r0, y0 = RING.cy + Math.sin(ang) * r0;
   const x1 = RING.cx + Math.cos(ang) * r1, y1 = RING.cy + Math.sin(ang) * r1;
   R.arrow(x0, y0, x1, y1, color, { thick: 1, head: 4 });
@@ -166,6 +173,7 @@ function pointer(R, ang, r0, r1, color, label) {
   const sp = R.toScreen(lx, ly), V = Camera.view, hw = R.textWidth(label) / 2 + 4;
   const tx = R.clamp(sp.x, V.x + hw + 1, V.x + V.w - hw - 1), ty = R.clamp(sp.y - 6, V.y + 1, V.y + V.h - 13);  // keep tag inside the view
   R.reserve(R.tag(label, tx, ty, color, { align: 'center' }));  // micro-text avoids pointer tags
+  ctx.restore();
 }
 
 function drawLinearStrip(R, S) {
