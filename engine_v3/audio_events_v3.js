@@ -16,7 +16,7 @@
   const FPS = 60;
   // live preview playback goes through engine_v3/synth_engine.js (master chain, 3-voice cap, pentatonic)
   const SE = () => window.SynthEngineV3;
-  const events = [], pulses = [], synth = {};
+  const events = [], pulses = [], synth = {}, timescale = [];   // timescale: [[frame, scale, stepMode]] per frame
 
   const NOTE = { C: 0, 'C#': 1, DB: 1, D: 2, 'D#': 3, EB: 3, E: 4, F: 5, 'F#': 6, GB: 6, G: 7, 'G#': 8, AB: 8, A: 9, 'A#': 10, BB: 10, B: 11 };
   // semitones relative to A1 (55 Hz) — the base pitch of the 'bass' preset
@@ -62,7 +62,13 @@
   window.logSynthState = (frame, hz, duty, gain, noise, o) =>
     window.logSynthStateV3(frame, Object.assign({ freq: hz, duty, gain, noise }, o || {}));
 
-  window.getAudioLogV3 = () => JSON.parse(JSON.stringify({ version: 3, fps: FPS, events, synth, pulses }));
+  // simulation speed per frame (R.setTimeScale): the music bed follows it, impact envelopes stretch in slow-mo
+  window.logTimeScaleV3 = function (frame, scale, step) {
+    timescale.push([frame | 0, +(+scale).toFixed(4), step ? 1 : 0]);
+    if (window.SynthEngineV3 && window.SynthEngineV3.setTimeScale) window.SynthEngineV3.setTimeScale(scale, step);
+  };
+
+  window.getAudioLogV3 = () => JSON.parse(JSON.stringify({ version: 3, fps: FPS, events, synth, pulses, timescale }));
   window.getSfxEvents = () => events.slice();
   window.getSynthStates = () => JSON.parse(JSON.stringify(synth));
 
@@ -70,6 +76,6 @@
   const ra = window.RetroAudio;
   if (ra) {
     const origClear = ra.clear.bind(ra);
-    ra.clear = function () { origClear(); events.length = 0; pulses.length = 0; for (const k in synth) delete synth[k]; };
+    ra.clear = function () { origClear(); events.length = 0; pulses.length = 0; timescale.length = 0; for (const k in synth) delete synth[k]; };
   }
 })();
