@@ -1,0 +1,18 @@
+{
+  "title": "{{TITLE}}",
+  "pipeline": "v3",
+  "duration": 34,
+  "_doc": "V3 visual-first: NO narration/captions. Beats are fixed time ranges (hook ≤ 4 s, payoff = last ~8 s). 'micro' documents the 2-5 word micro-text per beat. Optional groove adds a frame-quantized pulse; R.onBeat() fires on the same frames.",
+  "beats": [
+    { "id": "hook",    "start": 0,  "end": 4,  "cue": "Immediate anomaly / speed contrast in the first 3 s", "micro": "" },
+    { "id": "core",    "start": 4,  "end": 16, "cue": "Zoom into the core mechanism; state changes on the beat", "micro": "" },
+    { "id": "failure", "start": 16, "end": 26, "cue": "Edge case / failure mode when one thing shifts", "micro": "" },
+    { "id": "payoff",  "start": 26, "end": 34, "cue": "Balanced full-speed operation + HUD + payoff stamp", "micro": "" }
+  ],
+  "groove": {
+    "bpm": 120, "steps_per_beat": 4, "start": 4, "end": 33,
+    "pattern": { "kick": "x...x...x...x...", "hat": "..o...o...o...o.", "bass": "x.......x...x..." },
+    "notes": ["A1", "A1", "F1", "G1"]
+  },
+  "mix": { "groove": 0.4, "pulses": 0.8, "sfx": 1.0, "synth": 1.0 }
+}

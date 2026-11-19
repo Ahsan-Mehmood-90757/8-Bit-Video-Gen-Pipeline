@@ -1,0 +1,18 @@
+{
+  "title": "Ring Buffer vs Queue (v3 pipeline test)",
+  "pipeline": "v3",
+  "duration": 28,
+  "_doc": "V3 visual-first: no narration. Beats are plain time ranges; 'micro' lists the on-screen micro-text for that beat (documentation only). The optional groove block adds a frame-quantized background pulse; R.onBeat() in simulation.js fires on exactly the same frames.",
+  "beats": [
+    { "id": "hook",    "start": 0,    "end": 3.5,  "cue": "Linear queue dequeues and shifts 6 items left while the ring just hops one pointer", "micro": "SHIFT ×6 · WRAP MOD 8 · ZERO SHIFTING" },
+    { "id": "loop",    "start": 3.5,  "end": 13.0, "cue": "Zoom into slots 6,7,0,1: producer writes on the beat, consumer reads on the off-beat, HEAD wraps 7->0", "micro": "MODULO WRAP · HEAD=(HEAD+1)%8" },
+    { "id": "full",    "start": 13.0, "end": 21.0, "cue": "Producer bursts 4x faster, consumer stalls, buffer fills, pressure tone + filter opens", "micro": "FULL! OVERWRITE RISK · HEAD == TAIL" },
+    { "id": "payoff",  "start": 21.0, "end": 28.0, "cue": "Balanced flow, HUD SHIFT_COST 0 / O(1) STEP, payoff stamp", "micro": "FIXED RAM. O(1) FLOW." }
+  ],
+  "groove": {
+    "bpm": 120, "steps_per_beat": 4, "start": 3.5, "end": 27.0,
+    "pattern": { "kick": "x...x...x...x...", "hat": "..o...o...o...o.", "bass": "x.......x...x..." },
+    "notes": ["A1", "A1", "F1", "G1"]
+  },
+  "mix": { "groove": 0.4, "pulses": 0.8, "sfx": 1.0, "synth": 1.0 }
+}
