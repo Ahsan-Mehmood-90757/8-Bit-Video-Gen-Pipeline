@@ -1,5 +1,7 @@
 # Retro Video Factory v2 + v3
 
+> **New PC?** Follow [SETUP_NEW_PC.md](SETUP_NEW_PC.md): install Git, Python and FFmpeg, clone, then run `setup_v3.bat`.
+
 > **Two pipelines side by side:**
 > - **v2 (narrated)** uses `engine/` and `pipeline/` with Kokoro TTS and captions.
 > - **v3 (visual-first)** uses `engine_v3/` and `pipeline_v3/`, with no voice. Micro-text and frame-locked chiptune audio carry the video. See **V3.md**.
