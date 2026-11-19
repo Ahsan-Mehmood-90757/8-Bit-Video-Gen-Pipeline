@@ -5,7 +5,13 @@ Input : build/audio_log_v3.json from the browser (window.getAudioLogV3()):
           synth   continuous voices        -> oscillator with per-sample frequency AND low-pass filter modulation
           pulses  rhythmic accents         -> kick / bass / hat / snare on the exact frames of mechanical steps
         optional "groove" block from the timeline (bpm + step patterns) -> frame-quantized background pulse
-Output: mix_v3.wav — 48 kHz stereo, no voice, no ducking; lookahead peak limiter (no harsh clipping), -1 dBFS ceiling.
+Output: mix_v3.wav — 48 kHz stereo, no voice, no ducking.
+
+Musical mastering (identical to engine_v3/synth_engine.js, the live preview):
+  every voice: voiceGain (max 0.16) -> lowpass 2000 Hz Q 0.8 -> compressor (threshold -18 dB, knee 12, ratio 12,
+  attack 3 ms, release 150 ms) -> masterGain 0.75 -> safety lookahead limiter (-1 dBFS ceiling)
+  strict 3-voice polyphony per bus (sfx, rhythm): a 4th voice fades the oldest out in 15 ms
+  pitched layers snapped to C major pentatonic, folded to <= 880 Hz; square/saw -> triangle (>=200 Hz) or low pulse
 
 Every hit lands on sample round(frame / fps * 48000), the same instant the frame appears on screen.
 Groove steps use frame = ceil(T * fps - 1e-9), exactly like R.onBeat() in engine_v3/micro_text.js.
@@ -109,7 +115,7 @@ def synth_continuous_v3(states: dict, n: int, sr: int = SAMPLE_RATE, fps: int = 
         gain[idx] = rows[:, 3]
         for k, d in (("freq", 110.0), ("duty", 0.5), ("noise", 0.0), ("cutoff", 0.0), ("res", 0.0)):
             cols[k] = _hold_fill(cols[k], d)
-        fs = np.clip(np.interp(t, ft, cols["freq"]), 0, sr * 0.45)
+        fs = np.clip(np.interp(t, ft, cols["freq"]), 0, MAX_HZ)
         ds = np.clip(np.interp(t, ft, cols["duty"]), 0.02, 0.98)
         gs = np.interp(t, ft, gain)
         ns = np.clip(np.interp(t, ft, cols["noise"]), 0, 1)
@@ -129,7 +135,7 @@ def synth_continuous_v3(states: dict, n: int, sr: int = SAMPLE_RATE, fps: int = 
         if np.any(cols["cutoff"] > 0):
             cut = np.interp(t, ft, np.where(cols["cutoff"] > 0, cols["cutoff"], sr / 6.5))
             sig = svf_lowpass(sig, cut, np.interp(t, ft, cols["res"]), sr)
-        sig = sig * gs * 0.6
+        sig = sig * np.clip(gs, 0, 1) * VOICE_GAIN
         ang = (float(np.clip(v.get("pan", 0.0), -1, 1)) + 1) * np.pi / 4
         out[:, 0] += (sig * np.cos(ang) * np.sqrt(2)).astype(np.float32)
         out[:, 1] += (sig * np.sin(ang) * np.sqrt(2)).astype(np.float32)
@@ -202,44 +208,179 @@ def lookahead_limit(x: np.ndarray, sr: int = SAMPLE_RATE, ceiling_db: float = -1
     return (x * gs[:, None]).astype(np.float32)
 
 
+# ------------------------------------------------------------------ musical mastering (mirrors synth_engine.js)
+VOICE_GAIN, MASTER_GAIN, MAX_HZ, POLYPHONY, STEAL_FADE = 0.16, 0.75, 880.0, 3, 0.015
+LOWPASS_HZ, LOWPASS_Q = 2000.0, 0.8
+COMP = {"threshold": -18.0, "knee": 12.0, "ratio": 12.0, "attack": 0.003, "release": 0.15}
+PENTA = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25]
+_NOTES = sorted(f * 2.0 ** o for o in range(-5, 5) for f in PENTA[:5])
+
+
+def snap(f: float) -> float:
+    """Nearest C-major-pentatonic note in any octave (no folding)."""
+    return f if not f > 0 else min(_NOTES, key=lambda n: abs(math.log2(f / n)))
+
+
+def quantize(f: float) -> float:
+    """Nearest C-major-pentatonic note, folded down by octaves to <= 880 Hz."""
+    q = snap(f)
+    while q > MAX_HZ + 1e-6:
+        q /= 2
+    return round(q, 4)
+
+
+def musicalize(layers: list, pitch: float, musical: bool = True) -> list:
+    """Bake the semitone pitch into the layers, snap to pentatonic, warm the waveform. Mirrors synth_engine.js."""
+    k = 2 ** (float(pitch or 0) / 12)
+    out = []
+    for L0 in layers:
+        L = dict(L0)
+        f0 = float(L.get("freq", 440)) * k
+        f1 = float(L.get("freqEnd", L.get("freq", 440))) * k
+        if L.get("wave") == "noise":
+            L["freq"], L["freqEnd"] = f0, f1
+        elif not musical:
+            L["freq"], L["freqEnd"] = min(f0, MAX_HZ), min(f1, MAX_HZ)
+        else:
+            q0 = snap(f0)
+            q1 = q0 if abs(f1 - f0) < 1e-6 else snap(f1)
+            arp_hz = [snap(q0 * 2 ** (a / 12)) for a in (L.get("arp") or [])]
+            top = max([q0, q1] + arp_hz)
+            fold = 2 ** max(0, math.ceil(math.log2(top / MAX_HZ) - 1e-9))    # shift the whole note down whole octaves
+            q0, q1 = round(q0 / fold, 4), round(q1 / fold, 4)
+            if arp_hz:
+                L["arp"] = [12 * math.log2((h / fold) / q0) for h in arp_hz]
+            if L.get("wave", "square") in ("square", "saw"):
+                if q0 >= 200:
+                    L["wave"] = "triangle"
+                else:
+                    L["wave"], L["duty"] = "square", 0.5
+            L["freq"], L["freqEnd"] = q0, q1
+        out.append(L)
+    return out
+
+
+def place_voices(voices: list, n: int, cap: int = POLYPHONY, fade: float = STEAL_FADE, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """voices: [(start_sample, mono_snd, gain, pan)]. Strict polyphony: when a voice starts while `cap` are
+    sounding, the OLDEST is faded to silence over `fade` seconds (same as the preview)."""
+    bus = np.zeros((n, 2), dtype=np.float32)
+    voices = sorted(voices, key=lambda v: v[0])
+    ends = [v[0] + len(v[1]) for v in voices]
+    cut = [None] * len(voices)
+    active: list[int] = []
+    fs = max(1, int(fade * sr))
+    for i, (st, snd, g, pan) in enumerate(voices):
+        active = [j for j in active if (cut[j] if cut[j] is not None else ends[j]) > st]
+        while len(active) >= cap:
+            j = min(active, key=lambda a: voices[a][0])
+            cut[j] = st
+            active.remove(j)
+        active.append(i)
+    for i, (st, snd, g, pan) in enumerate(voices):
+        if st >= n:
+            continue
+        seg = snd.astype(np.float32).copy()
+        if cut[i] is not None:
+            keep = max(0, cut[i] - st)
+            seg = seg[: keep + fs]
+            if keep < len(seg):
+                seg[keep:] *= np.linspace(1, 0, len(seg) - keep, dtype=np.float32)
+        end = min(n, st + len(seg))
+        seg = seg[: end - st] * min(VOICE_GAIN, VOICE_GAIN * g)
+        ang = (float(np.clip(pan, -1, 1)) + 1) * np.pi / 4
+        bus[st:end, 0] += seg * np.cos(ang) * np.sqrt(2)
+        bus[st:end, 1] += seg * np.sin(ang) * np.sqrt(2)
+    return bus
+
+
+def biquad_lowpass(x: np.ndarray, f0: float = LOWPASS_HZ, q: float = LOWPASS_Q, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """RBJ low-pass (same response as Web Audio's BiquadFilterNode 'lowpass'), applied via its impulse response."""
+    w0 = 2 * np.pi * f0 / sr
+    alpha = np.sin(w0) / (2 * q)
+    cw = np.cos(w0)
+    b = np.array([(1 - cw) / 2, 1 - cw, (1 - cw) / 2]) / (1 + alpha)
+    a1, a2 = -2 * cw / (1 + alpha), (1 - alpha) / (1 + alpha)
+    L = 4096
+    ir = np.zeros(L)
+    x1 = x2 = y1 = y2 = 0.0
+    for i in range(L):
+        xi = 1.0 if i == 0 else 0.0
+        yi = b[0] * xi + b[1] * x1 + b[2] * x2 - a1 * y1 - a2 * y2
+        ir[i] = yi
+        x2, x1, y2, y1 = x1, xi, y1, yi
+    n = x.shape[0] + L - 1
+    nfft = 1 << (n - 1).bit_length()
+    H = np.fft.rfft(ir, nfft)
+    out = np.empty_like(x)
+    for ch in range(x.shape[1]):
+        out[:, ch] = np.fft.irfft(np.fft.rfft(x[:, ch], nfft) * H, nfft)[: x.shape[0]]
+    return out.astype(np.float32)
+
+
+def compressor(x: np.ndarray, sr: int = SAMPLE_RATE, threshold: float = -18.0, knee: float = 12.0, ratio: float = 12.0,
+               attack: float = 0.003, release: float = 0.15) -> np.ndarray:
+    """Feed-forward peak compressor with a soft knee (Web Audio DynamicsCompressor parameters, no makeup gain)."""
+    B = 48                                                    # 1 ms control blocks
+    nb = int(math.ceil(len(x) / B))
+    pad = np.zeros((nb * B, x.shape[1]), dtype=np.float32)
+    pad[: len(x)] = x
+    lvl = 20 * np.log10(np.maximum(np.abs(pad).reshape(nb, B, -1).max(axis=(1, 2)), 1e-9))
+    over = lvl - threshold
+    out_db = np.where(over <= -knee / 2, lvl,
+                      np.where(over >= knee / 2, threshold + over / ratio,
+                               lvl + (1 / ratio - 1) * (over + knee / 2) ** 2 / (2 * knee)))
+    target = out_db - lvl                                      # gain reduction in dB (<= 0)
+    ca, cr = math.exp(-B / (attack * sr)), math.exp(-B / (release * sr))
+    g = np.empty(nb)
+    cur = 0.0
+    for i in range(nb):
+        tgt = target[i]
+        cur = tgt + (cur - tgt) * (ca if tgt < cur else cr)
+        g[i] = cur
+    gs = 10 ** (np.interp(np.arange(nb * B), np.arange(nb) * B + B / 2, g)[: len(x)] / 20)
+    return (x * gs[:, None]).astype(np.float32)
+
+
 # ------------------------------------------------------------------ main entry
 def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict | None = None,
-                  channel_dir: Path | None = None, sr: int = SAMPLE_RATE, mix: dict | None = None) -> dict:
+                  channel_dir: Path | None = None, sr: int = SAMPLE_RATE, mix: dict | None = None,
+                  audio: dict | None = None) -> dict:
     fps = int(log_data.get("fps", FPS))
     mix = {"sfx": 1.0, "pulses": 0.8, "groove": 0.45, "synth": 1.0, **(mix or {})}
+    audio = audio or {}
+    musical = audio.get("musical", True)
+    cap = int(audio.get("polyphony", POLYPHONY))
     presets = load_presets_v3(channel_dir)
     n = int(math.ceil(duration * sr))
-    tail = sr  # room for release tails, trimmed later
-    sfx_bus = np.zeros((n + tail, 2), dtype=np.float32)
-    pulse_bus = np.zeros_like(sfx_bus)
     cache, unknown = {}, set()
 
     def sound(kind, semis):
         key = (kind, round(float(semis), 3))
         if key not in cache:
-            cache[key] = synth_sound(presets[kind], float(semis), sr)
+            cache[key] = synth_sound(musicalize(presets[kind], float(semis), musical), 0.0, sr)
         return cache[key]
 
+    start_of = lambda frame: int(round(int(frame) / fps * sr))  # noqa: E731  frame-locked placement
+    sfx_voices = []
     for ev in log_data.get("events", []):
         if ev["type"] not in presets:
             unknown.add(ev["type"]); continue
-        _place(sfx_bus, sound(ev["type"], ev.get("pitch", 0)), int(ev["frame"]), float(ev.get("vol", 1)), float(ev.get("pan", 0)), fps, sr)
+        sfx_voices.append((start_of(ev["frame"]), sound(ev["type"], ev.get("pitch", 0)), float(ev.get("vol", 1)) * mix["sfx"], float(ev.get("pan", 0))))
     pulses = list(log_data.get("pulses", [])) + groove_pulses(groove, duration, fps)
-    n_groove = 0
+    rhythm_voices, n_groove = [], 0
     for p in pulses:
         if p["kind"] not in presets:
             unknown.add(p["kind"]); continue
-        vol = (0.35 + 0.65 * float(p.get("accent", 0.7))) * (mix["groove"] / mix["pulses"] if p.get("groove") else 1.0)
+        g = (0.35 + 0.65 * float(p.get("accent", 0.7))) * (mix["groove"] if p.get("groove") else mix["pulses"])
         n_groove += bool(p.get("groove"))
-        _place(pulse_bus, sound(p["kind"], p.get("semis", 0)), int(p["frame"]), vol, float(p.get("pan", 0)), fps, sr)
-    synth_bus = synth_continuous_v3(log_data.get("synth", {}), n + tail, sr, fps)
+        rhythm_voices.append((start_of(p["frame"]), sound(p["kind"], p.get("semis", 0)), g, float(p.get("pan", 0))))
 
-    bus = sfx_bus * mix["sfx"] + pulse_bus * mix["pulses"] + synth_bus * mix["synth"]
-    bus = bus[:n]
-    # gain-stage so 99.95% of samples sit under -1 dBFS, then catch the rare peaks with the limiter
-    ref = float(np.percentile(np.abs(bus), 99.95)) if bus.size else 0.0
-    if ref > 1e-6:
-        bus *= min(4.0, 0.89 / ref)
+    bus = place_voices(sfx_voices, n, cap, sr=sr) + place_voices(rhythm_voices, n, cap, sr=sr)
+    bus += synth_continuous_v3(log_data.get("synth", {}), n, sr, fps) * mix["synth"]
+    # master chain: lowpass 2 kHz Q0.8 -> compressor -> master 0.75 -> safety limiter
+    bus = biquad_lowpass(bus, audio.get("lowpassHz", LOWPASS_HZ), audio.get("lowpassQ", LOWPASS_Q), sr)
+    bus = compressor(bus, sr, **{**COMP, **(audio.get("comp") or {})})
+    bus *= float(audio.get("masterGain", MASTER_GAIN))
     bus = lookahead_limit(bus, sr)
     fade = int(0.03 * sr)
     if n > 2 * fade:
@@ -248,8 +389,10 @@ def synthesize_v3(log_data: dict, duration: float, out_path: Path, groove: dict 
     if unknown:
         log(f"unknown sound types skipped (add to engine_v3/sfx_presets_v3.js or the channel sfx file): {sorted(unknown)}", "warn")
     peak = float(np.max(np.abs(bus))) if bus.size else 0.0
-    return {"events": len(log_data.get("events", [])), "pulses": len(pulses) - n_groove, "groove_steps": n_groove,
-            "voices": len(log_data.get("synth", {})), "peak_db": 20 * math.log10(peak) if peak > 0 else -120.0}
+    max_note = max((L["freq"] for k in cache for L in musicalize(presets[k[0]], k[1], musical) if L.get("wave") != "noise"), default=0)
+    return {"events": len(sfx_voices), "pulses": len(pulses) - n_groove, "groove_steps": n_groove,
+            "voices": len(log_data.get("synth", {})), "peak_db": 20 * math.log10(peak) if peak > 0 else -120.0,
+            "max_note_hz": round(max_note, 2)}
 
 
 def main():

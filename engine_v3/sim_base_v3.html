@@ -7,7 +7,9 @@
   V3 Visual-First host page. Reuses the v2 core (engine/ is never modified by v3) and layers on:
     engine_v3/sfx_presets_v3.js   rhythm voices + UI sounds
     engine_v3/audio_events_v3.js  logSfxV3 / logSynthStateV3 / logBeatPulseV3
-    engine_v3/micro_text.js       impact micro-text, hook banner, payoff stamp, beat clock, 900x1420 safe zone
+    engine_v3/micro_text.js       impact micro-text, hook banner, payoff stamp, beat clock
+    engine_v3/safe_zone_v3.js     UI-safe box 90..920 x 260..1480, fitBoundsToSafeZone, QA violation tracking
+    engine_v3/synth_engine.js     preview audio master chain (voice 0.16 -> LP 2k -> compressor -> 0.75), 3-voice cap, pentatonic
   URL parameters:
     sim=<episode simulation.js>   timeline=<episode build/timeline.js>   (paths relative to this file)
     theme=<channels/<slug>/theme.js>  sfx=<channels/<slug>/sfx_presets.js>  (optional channel kit)
@@ -38,9 +40,11 @@
 <script src="sfx_presets_v3.js"></script>
 <script src="../engine/retro_audio.js"></script>
 <script src="audio_events_v3.js"></script>
+<script src="synth_engine.js"></script>
 <script src="../engine/retro_engine.js"></script>
 <script src="../engine/camera_ui.js"></script>
 <script src="micro_text.js"></script>
+<script src="safe_zone_v3.js"></script>
 <script>
 (function () {
   const p = new URLSearchParams(location.search);

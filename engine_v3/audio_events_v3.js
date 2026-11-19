@@ -14,7 +14,8 @@
 (function () {
   'use strict';
   const FPS = 60;
-  const v2Sfx = window.logSfx, v2Synth = window.logSynthState;   // preview playback only
+  // live preview playback goes through engine_v3/synth_engine.js (master chain, 3-voice cap, pentatonic)
+  const SE = () => window.SynthEngineV3;
   const events = [], pulses = [], synth = {};
 
   const NOTE = { C: 0, 'C#': 1, DB: 1, D: 2, 'D#': 3, EB: 3, E: 4, F: 5, 'F#': 6, GB: 6, G: 7, 'G#': 8, AB: 8, A: 9, 'A#': 10, BB: 10, B: 11 };
@@ -32,7 +33,7 @@
     const ev = { type: String(type), frame: frame | 0, time: +((frame | 0) / FPS).toFixed(6), pitch: +(pitch || 0),
       vol: o && o.vol !== undefined ? +o.vol : 1, pan: o && o.pan !== undefined ? +o.pan : 0 };
     events.push(ev);
-    if (v2Sfx) v2Sfx(ev.type, ev.frame, ev.pitch, ev);           // live preview sound
+    if (SE()) SE().play(ev.type, ev.pitch, ev, 'sfx');            // live preview sound
     return ev;
   };
 
@@ -43,7 +44,7 @@
     const row = [f, +(+o.freq || 0).toFixed(3), +(o.duty === undefined ? 0.5 : o.duty).toFixed(4), +(+o.gain || 0).toFixed(4),
       +(+o.noise || 0).toFixed(4), o.cutoff === undefined ? 0 : Math.round(+o.cutoff), +(+(o.res || 0)).toFixed(3)];
     if (v.frames.length && v.frames[v.frames.length - 1][0] === f) v.frames[v.frames.length - 1] = row; else v.frames.push(row);
-    if (v2Synth) v2Synth(f, row[1], row[2], row[3], row[4], { voice: id, wave: v.wave, pan: v.pan });
+    if (SE()) SE().voice(id, { freq: row[1], gain: row[3], cutoff: row[5], res: row[6], wave: v.wave, frame: f });
   };
 
   window.logBeatPulseV3 = function (frame, o) {
@@ -52,7 +53,7 @@
     const p = { kind, frame: frame | 0, semis: kind === 'bass' ? noteToSemis(o.note) : +(o.pitch || 0),
       accent: o.accent === undefined ? 0.7 : Math.max(0, Math.min(1, +o.accent)), pan: +(o.pan || 0) };
     pulses.push(p);
-    if (v2Sfx) v2Sfx(kind, p.frame, p.semis, { vol: 0.4 + 0.6 * p.accent, pan: p.pan });
+    if (SE()) SE().play(kind, p.semis, { vol: 0.35 + 0.65 * p.accent, pan: p.pan }, 'rhythm');
     return p;
   };
 
