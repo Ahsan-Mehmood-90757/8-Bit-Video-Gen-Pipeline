@@ -1,0 +1,14 @@
+{
+  "name": "{{NAME}}",
+  "handle": "{{HANDLE}}",
+  "niche": "{{NICHE}}",
+  "palette_preset": "{{PALETTE_NAME}}",
+
+  "voice": { "kokoro_voice": "{{VOICE}}", "speed": 1.05, "edge_voice": "en-US-GuyNeural" },
+  "tts_engines": ["kokoro", "piper", "sapi", "silent"],
+  "timing": { "lead_in": 0.35, "gap": 0.3, "tail": 1.8 },
+  "captions": { "font": "Arial Black", "size": 74, "uppercase": true, "highlight": "{{HIGHLIGHT}}", "max_words": 3, "max_chars": 16 },
+  "crt": true,
+  "sfx_db": -14,
+  "encoder": "x264"
+}

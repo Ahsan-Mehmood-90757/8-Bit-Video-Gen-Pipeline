@@ -1,0 +1,11 @@
+{
+  "title": "{{TITLE}}",
+  "topic": "{{TOPIC}}",
+  "_doc": "Voice, captions, timing and CRT are inherited from ../../channel.json — only override here if this episode needs something different. Beats: 4-phase v2 structure. Use R.beat('<id>') and R.wordAt('word', '<id>', fallback) in simulation.js to lock visuals to narration.",
+  "beats": [
+    { "id": "hook",      "cue": "Full assembly view -> outer shell peels away", "text": "Replace with the hook narration.", "min_duration": 6.0 },
+    { "id": "zoom",      "cue": "Camera zooms ~2x into the core mechanism, force arrows + labels", "text": "Replace with the micro-mechanism narration.", "min_duration": 12.0 },
+    { "id": "failure",   "cue": "Show what breaks when timing/alignment/load shifts by one step", "text": "Replace with the failure-mode narration.", "min_duration": 9.0 },
+    { "id": "fullspeed", "cue": "Zoom out to full-speed operation with HUD synced to the audio tone", "text": "Replace with the full-speed narration and sign-off.", "min_duration": 8.0 }
+  ]
+}
