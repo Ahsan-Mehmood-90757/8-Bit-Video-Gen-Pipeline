@@ -1,0 +1,45 @@
+{
+  "title": "Linear vs Binary Search",
+  "topic": "Why binary search finds one item in a million with only 20 checks",
+  "voice": {
+    "kokoro_voice": "am_michael",
+    "speed": 1.05,
+    "edge_voice": "en-US-GuyNeural"
+  },
+  "tts_engines": ["kokoro", "piper", "sapi", "edge", "silent"],
+  "timing": { "lead_in": 0.35, "gap": 0.3, "tail": 1.8 },
+  "captions": { "uppercase": true, "max_words": 3, "max_chars": 16, "whisper_model": "small.en" },
+  "crt": true,
+  "beats": [
+    {
+      "id": "hook",
+      "cue": "Two panels already filling with 64 sorted boxes; target number pulses gold; tick cascade",
+      "text": "You need one number hiding in a sorted list. Watch two strategies race to find it.",
+      "min_duration": 4.0
+    },
+    {
+      "id": "setup",
+      "cue": "Top: linear cursor steps box by box. Bottom: binary probes the middle, too high / too low callouts",
+      "text": "Up top, linear search checks every box, one by one. Down below, binary search jumps to the middle and asks one question: too high, or too low?",
+      "min_duration": 7.0
+    },
+    {
+      "id": "escalation",
+      "cue": "Half of the bottom boxes dim each probe; binary FOUND at 6 checks while linear is still crawling",
+      "text": "Each answer throws away half of what's left. Sixty-four boxes? Binary needs six guesses. Linear might need sixty-four.",
+      "min_duration": 7.0
+    },
+    {
+      "id": "climax",
+      "cue": "Boxes shatter into a million-pixel data wall; linear counter races to 1,000,000, binary steps to 20",
+      "text": "Now scale it to a million items. Linear search could grind through a million checks. Binary search? Done in twenty.",
+      "min_duration": 7.0
+    },
+    {
+      "id": "takeaway",
+      "cue": "Scoreboard rows 1K -> 10, 1M -> 20, 1B -> 30, then HALVE IT stamp",
+      "text": "That's the power of halving. Double the data, and you pay just one extra step. Sort first, then search smart.",
+      "min_duration": 6.0
+    }
+  ]
+}

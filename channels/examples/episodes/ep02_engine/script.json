@@ -1,0 +1,30 @@
+{
+  "title": "How an Engine Fires",
+  "topic": "Four-stroke single-cylinder engine: intake, compression, power, exhaust — and what knock is",
+  "beats": [
+    {
+      "id": "hook",
+      "cue": "Full engine with casing, shaking with each firing; casing wipes away on 'peel'",
+      "text": "This is a single cylinder engine. Peel off the block, and you'll find seven parts moving in perfect sync.",
+      "min_duration": 6.0
+    },
+    {
+      "id": "zoom",
+      "cue": "Camera 2x into the chamber; crank angle locked to the words intake / rises / fires / exhaust",
+      "text": "Zoom in. The intake valve opens and the piston sucks in fuel and air. It rises, squeezing the mix tight. Then the spark plug fires, and the blast slams the piston down. Finally the exhaust valve lets the burnt gas out.",
+      "min_duration": 14.0
+    },
+    {
+      "id": "failure",
+      "cue": "Spark fires 30 degrees early; flame hits a rising piston; KNOCK, red force arrows, PSI spike",
+      "text": "Now fire that spark just a few degrees too early. The flame hits a piston that's still rising. That's engine knock, and it can crack a piston fast.",
+      "min_duration": 9.0
+    },
+    {
+      "id": "fullspeed",
+      "cue": "Zoom out, RPM ramps; continuous engine tone = 40 + RPM/20 Hz shown on HUD and scope",
+      "text": "Back on time, crank it up. Every pulse you hear is one power stroke, and the tone climbs with the RPM.",
+      "min_duration": 8.0
+    }
+  ]
+}
