@@ -1,0 +1,15 @@
+{
+  "title": "Depth FX + Speed-Coupled Groove (v3 feature test)",
+  "pipeline": "v3",
+  "duration": 16,
+  "_doc": "Feature test: 2.5D cutaway walls, motion trails, pooled particles, flow dots, speed badge, R.setTimeScale slow-mo + step mode, continuous music bed that follows the simulation speed, anti-dead-air pacing.",
+  "beats": [
+    { "id": "hook",   "start": 0.0,  "end": 2.2,  "cue": "Engine already running at full speed + tension hook" },
+    { "id": "run",    "start": 2.2,  "end": 6.0,  "cue": "Real speed: trails, sparks every power stroke, intake/exhaust flow dots" },
+    { "id": "slowmo", "start": 6.0,  "end": 10.5, "cue": "x0.15 slow-mo, focal zoom on the chamber, groove slows + drops in pitch" },
+    { "id": "step",   "start": 10.5, "end": 13.0, "cue": "Back to real time, then STEP MODE 90-degree steps" },
+    { "id": "payoff", "start": 13.0, "end": 16.0, "cue": "Full speed + payoff stamp" }
+  ],
+  "music": { "enabled": true, "bpm": 120, "level": 0.55, "progression": ["A1", "C2", "G1", "D2"] },
+  "audio": { "lufs": -14 }
+}

@@ -1,6 +1,7 @@
 /* {{TITLE}} — V3 Visual-First episode (no narration). Channel: {{CHANNEL}}
  * Starter skeleton: replace the placeholder gear pair with the real mechanism.
  * V3 toolkit: R.hookBanner, R.micro (badge|warn|ok|tag|stamp|formula), R.formula, R.payoffStamp,
+ * depth/motion: R.wall25d, R.trail, R.emit / R.stream particles, R.flowDots, R.speedBadge, R.setTimeScale (slow-mo),
  * R.onBeat(div) / R.pulse(kind) / R.synth(voice,{freq,cutoff,res,...}) + everything from v2
  * (Camera, R.world, R.peel, R.force, R.flow, R.label, R.telemetry, R.gauge, R.scope, R.gear ...).
  * Colors: R.PAL roles only, so the channel theme controls the look.
@@ -30,7 +31,7 @@ Retro.defineSim({
       { t: b.fail.start, fit: DRIVE, zoom: 2.4 },
       { t: b.fail.start + 0.8, fit: ALL, zoom: 1.6 },
       { t: b.pay.start, fit: ALL, zoom: 1.6 },
-      { t: b.pay.start + 0.8, x: 135, y: 160, zoom: 1 }                   // mechanism low, payoff stamp on top
+      { t: b.pay.start + 0.8, fit: ALL, zoom: 1.6 }                       // stay framed tight: no empty voids
     ]);
   },
 
@@ -42,6 +43,8 @@ Retro.defineSim({
     // event-only audio: one soft hop per mechanical step (no continuous hum)
     if (R.onBeat(1) && !jam && t >= b.core.start) { S.steps++; S.stepT = t; R.sfx('hop', S.steps % 8); }
     if (R.crossed(b.fail.start + 2)) { R.sfx('warn'); R.shake(3, 10); }
+    // anti-dead-air: a jam is never a frozen frame — the teeth grind (sparks, jitter, periodic grind sound)
+    if (jam && R.every('grind', 0.9, b.fail.start + 2.4)) { R.sfx('error', 0, { vol: 0.6 }); R.shake(1, 6); }
   },
 
   draw(R) {
@@ -57,10 +60,15 @@ Retro.defineSim({
       R.node(112 - 26, 205 - 26, 52, 52, 'drive gear'); R.node(157 - 19, 205 - 19, 38, 38, 'driven gear');
       R.micro('12 TEETH', 112, 180, { t0: b.core.start + 1.2, dur: 2.5, style: 'badge', color: P.cyan });
       R.micro('JAMMED!', 135, 205, { t0: b.fail.start + 2, dur: 3, style: 'warn' });
+      if (t >= b.fail.start + 2 && t < b.pay.start)                     // grinding sparks at the mesh point
+        R.stream('grind', { x: 136, y: 200, rate: 60, angle: -Math.PI / 2, spread: 1.4, speed: [0.6, 2.0], drag: 0.06, life: [0.2, 0.5], kind: 'spark', color: [P.gold, P.white, P.coral] });
+      // motion trail on the drive gear's marker tooth (shows speed at a glance)
+      if (!(t >= b.fail.start + 2 && t < b.pay.start)) R.trail('tooth', 112 + Math.cos(S.angle) * 20, 205 + Math.sin(S.angle) * 20, { n: 10, color: P.cyan, size: 3 });
     });
     R.formula('RATIO = 12 / 9', SAFE.x + SAFE.w / 2, SAFE.y + 255 + 8, { t0: b.core.start + 4, dur: 6, at: [0, 0] });
     // reactive counter: pops on every step, dims in between (no always-on HUD)
     if (S.steps > 0) R.micro('STEP ' + S.steps, SAFE.x + SAFE.w / 2, SAFE.y + SAFE.h - 12, { t0: S.stepT, dur: 1e9, style: 'tag', color: P.cyan, pointer: false, fixed: true, at: [0, 0], dimAfter: 0.5 });
-    R.payoffStamp('PAYOFF\nLINE HERE.', { t0: b.pay.start + 3, dur: 2.5, y: SAFE.y + 70 });
+    R.payoffStamp('PAYOFF\nLINE HERE.', { t0: b.pay.start + 3, dur: 2.5, y: SAFE.y + 40 });
+    R.speedBadge({ from: 2.3 });
   }
 });

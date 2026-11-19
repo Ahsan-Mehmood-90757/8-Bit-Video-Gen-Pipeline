@@ -1,8 +1,8 @@
 {
   "title": "Linear Search vs Binary Search",
   "pipeline": "v3",
-  "duration": 32,
-  "_doc": "V3 visual-first (no TTS / voiceover / subtitles). Sorted 16-item array, target 72 (index 13). Binary finds it in 3 probes (mid 7 -> 11 -> 13); linear needs 14. Reactive text only (<= 4 words, pops on events, dims/clears), focal zoom + spotlight per action, event-only audio (no bed), engine-enforced clean envelopes.",
+  "duration": 31,
+  "_doc": "V3 visual-first (no TTS / voiceover / subtitles). Sorted 16-item array, target 72 (index 13). Binary finds it in 3 probes (mid 7 -> 11 -> 13); linear needs 14. Reactive text only (<= 4 words, pops on events, dims/clears), focal zoom + spotlight per action, event-only audio (no bed), engine-enforced clean envelopes. Continuous speed-coupled music bed; card tightened to 25-31 s with packet/spark micro-events (anti-dead-air).",
   "beats": [
     {
       "id": "setup",
@@ -28,7 +28,7 @@
     {
       "id": "scale",
       "start": 25.0,
-      "end": 32.0,
+      "end": 31.0,
       "cue": "1,000,000 items card: linear 1,000,000 steps vs binary 20 max",
       "micro": "REQUIRES SORTED DATA"
     }
@@ -207,6 +207,17 @@
         "r": 0.1,
         "vol": 0.4
       }
+    ]
+  },
+  "music": {
+    "enabled": true,
+    "bpm": 112,
+    "level": 0.5,
+    "progression": [
+      "C2",
+      "A1",
+      "G1",
+      "D2"
     ]
   }
 }

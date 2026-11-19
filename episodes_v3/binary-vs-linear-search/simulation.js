@@ -25,7 +25,7 @@ const LIN_T = (() => {                                             // linear che
   return p2.concat(p3);
 })();
 const CHECK_HOLD = 0.3;
-const SCALE_T = 25.0;
+const SCALE_T = 25.0;                                             // card runs 25.0 - 31.0 s (tight, no dead hold)
 
 const cellXY = (h, i) => ({ x: GRID.x0 + (i % 8) * GRID.pitch, y: i < 8 ? h.r1 : h.r2 });
 const gridBox = (h) => [GRID.x0 - 3, h.r1 - 3, 8 * GRID.pitch + 5, (h.r2 - h.r1) + GRID.cell + 20];
@@ -58,10 +58,16 @@ Retro.defineSim({
     if (R.crossed(HOP_T[2] + 0.12)) { R.sfx('bin_win', 0, { pan: 0.15 }); R.flash(COL.green, 5); }
     if (R.crossed(23.5)) R.sfx('bin_hop', 4, { vol: 0.9 });
     // scale card
-    if (R.crossed(SCALE_T)) R.sfx('soft_swoosh');
-    if (t >= SCALE_T + 1.0 && t < SCALE_T + 2.8 && R.every('card_ticks', 0.15, SCALE_T + 1.0)) R.sfx('lin_tick', 0, { vol: 0.7, pan: -0.2 });
-    if (R.crossed(SCALE_T + 4.0)) R.sfx('bin_win', -12, { pan: 0.1 });
-    if (R.crossed(SCALE_T + 5.4)) R.sfx('bin_hop', 7, { vol: 0.8 });
+    if (R.crossed(SCALE_T)) {
+      R.sfx('soft_swoosh');
+      // the two arrays dissolve into data packets that fly into the card (no empty transition)
+      R.world(() => {
+        for (const h of [HALF.top, HALF.bot]) R.emit(36, { x: GRID.x0 + 100, y: h.r1 + 30, angle: -Math.PI / 2, spread: Math.PI, speed: [0.8, 2.4], drag: 0.05, life: [0.5, 1.1], kind: 'packet', color: [COL.cyan, COL.amber, COL.red, COL.green] });
+      });
+    }
+    if (t >= SCALE_T + 0.6 && t < SCALE_T + 2.2 && R.every('card_ticks', 0.15, SCALE_T + 0.6)) R.sfx('lin_tick', 0, { vol: 0.7, pan: -0.2 });
+    if (R.crossed(SCALE_T + 3.0)) R.sfx('bin_win', -12, { pan: 0.1 });
+    if (R.crossed(SCALE_T + 4.2)) R.sfx('bin_hop', 7, { vol: 0.8 });
   },
 
   draw(R) {
@@ -238,21 +244,26 @@ function drawScaleCard(R, S) {
   const line = (txt, y, t0, dur, color, size, dimAfter) =>
     R.micro(txt, cx, y, { t0: SCALE_T + t0, dur, style: 'tag', color, size, pointer: false, fixed: true, at: [0, 0], dimAfter });
   const barX = GRID.x0, barW = 8 * GRID.pitch - 1;
-  line('1,000,000 ITEMS', 104, 0.4, 6.6, COL.text, 2, 1.2);
-  if (t >= 0.9) {                                                    // linear bar fills (data counter), then its line pops
-    const k = R.ease.inOut(R.clamp((t - 1.0) / 1.8, 0, 1));
-    R.ctx.save(); R.ctx.globalAlpha = t > 4.2 ? 0.45 : 1;
+  line('1,000,000 ITEMS', 104, 0.2, 5.8, COL.text, 2, 1.0);
+  if (t >= 0.5) {                                                    // linear bar fills (data counter + sparks at its tip)
+    const k = R.ease.inOut(R.clamp((t - 0.6) / 1.6, 0, 1)), tip = barX + 2 + Math.round((barW - 4) * k);
+    R.ctx.save(); R.ctx.globalAlpha = t > 3.2 ? 0.45 : 1;
     R.rect(barX, 140, barW, 14, '#1A0E14');
-    R.rect(barX + 2, 142, Math.round((barW - 4) * k), 10, COL.red);
-    if (t < 2.9) R.digits(R.fmt(Math.round(1e6 * k)), cx, 160, { color: COL.red, scale: 2, align: 'center' });
+    R.rect(barX + 2, 142, tip - barX - 2, 10, COL.red);
+    if (t < 2.2) R.digits(R.fmt(Math.round(1e6 * k)), cx, 160, { color: COL.red, scale: 2, align: 'center' });
     R.ctx.restore();
+    if (k > 0 && k < 1) R.stream('linbar', { x: tip, y: 147, rate: 40, angle: 0, spread: 0.9, speed: [0.5, 1.4], life: [0.2, 0.45], kind: 'spark', color: [COL.red, '#FFFFFF'] });
   }
-  line('LINEAR: 1,000,000 STEPS', 165, 2.9, 4.1, COL.red, 1, 1.3);
-  if (t >= 3.9) {
-    const pop = R.clamp((t - 4.0) / 0.15, 0, 1);
+  line('LINEAR: 1,000,000 STEPS', 165, 2.2, 3.8, COL.red, 1, 1.0);
+  if (t >= 2.9) {
+    const pop = R.clamp((t - 3.0) / 0.15, 0, 1);
     R.rect(barX, 205, barW, 14, '#0C1A12');
     if (pop > 0) R.rect(barX + 2, 207, Math.max(2, Math.round(4 * pop)), 10, COL.green);
+    if (t >= 3.0) {
+      R.stream('binbar', { x: barX + 5, y: 212, rate: 45, angle: 0, spread: 1.1, speed: [0.5, 1.5], life: [0.4, 0.9], kind: 'dot', size: 2, color: [COL.green, '#BBF7D0'] });
+      if (Math.floor(t * 4) % 2 === 0) R.border(barX - 1, 204, 9, 16, COL.green);   // pulse on the tiny green bar
+    }
   }
-  line('BINARY: 20 STEPS MAX', 230, 4.0, 3.0, COL.green, 1, 1.4);
-  line('REQUIRES SORTED DATA', 300, 5.4, 1.6, COL.amber, 1);
+  line('BINARY: 20 STEPS MAX', 230, 3.0, 3.0, COL.green, 1, 1.2);
+  line('REQUIRES SORTED DATA', 300, 4.2, 1.8, COL.amber, 1);
 }
